@@ -1,0 +1,58 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# uv & package managers
+.uv/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Unit test & coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Datasets and packet captures (NEVER COMMIT PACKET CAPTURES OR RAW DATA)
+data/*
+!data/README.md
+*.pcap
+*.pcapng
+*.cap
+*.csv
+*.tsv
+*.parquet
+*.jsonl
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables & secrets
+.env
+.env.*
+*.pem
+*.key
+*.token
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store

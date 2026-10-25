@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dos-detector"
+version = "0.1.0"
+description = "A defensive, offline network traffic analysis engine for detecting Denial-of-Service (DoS) attack patterns"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+    { name = "Marceli Karman" }
+]
+keywords = ["cybersecurity", "dos-detection", "pcap-analysis", "traffic-monitoring"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Education",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = [
+    "scapy>=2.5.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=3.7.0",
+]
+ml = [
+    "scikit-learn>=1.5.0",
+]
+
+[project.scripts]
+dos-detector = "dos_detector.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dos_detector"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (import order)
+    "B",   # flake8-bugbear (common python bug patterns)
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade (modern Python 3.12+ syntax)
+    "S",   # flake8-bandit (automated security checks)
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking (clean imports for type checking)
+    "PT",  # flake8-pytest-style
+]
+ignore = [
+    "E501", # Line too long (handled gracefully by ruff formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101", # Allow `assert` statements inside tests
+    "PT009", # Allow standard assertions if needed
+]
+"src/dos_detector/cli.py" = [
+    "E402", # Allow Scapy stderr suppression before imports
+]
+"src/dos_detector/ingestion.py" = [
+    "E402", # Allow Scapy stderr suppression before imports
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "scapy.*",
+    "pandas.*",
+    "sklearn.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra -q --strict-markers"
+markers = [
+    "unit: fast unit tests that require no external data files",
+    "integration: integration tests that exercise pipeline flows",
+]
