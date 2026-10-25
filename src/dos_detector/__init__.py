@@ -1,0 +1,40 @@
+"""DoS Attack Detector.
+
+A defensive, offline network traffic analysis engine for detecting Denial-of-Service (DoS)
+attack patterns using configurable rules and anomaly detection.
+"""
+
+from dos_detector.alerting import AlertSink, InMemoryAlertSink
+from dos_detector.config import DetectionConfig
+from dos_detector.detector import BaseDetector, RuleBasedDetector
+from dos_detector.ingestion import (
+    CIC_IDS2017_CSV_MAPPING,
+    CsvFieldMapping,
+    stream_csv,
+    stream_pcap,
+)
+from dos_detector.models import (
+    DetectionAlert,
+    PacketRecord,
+    Severity,
+    TrafficWindow,
+)
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "CIC_IDS2017_CSV_MAPPING",
+    "AlertSink",
+    "BaseDetector",
+    "CsvFieldMapping",
+    "DetectionAlert",
+    "DetectionConfig",
+    "InMemoryAlertSink",
+    "PacketRecord",
+    "RuleBasedDetector",
+    "Severity",
+    "TrafficWindow",
+    "__version__",
+    "stream_csv",
+    "stream_pcap",
+]
