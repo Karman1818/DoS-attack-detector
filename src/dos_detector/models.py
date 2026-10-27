@@ -52,6 +52,10 @@ class TrafficWindow:
     rst_count: int
     unique_src_ips: int
     unique_dst_ports: int
+    ip_entropy: float = 0.0
+    normalized_ip_entropy: float = 0.0
+    top_source_ip: str | None = None
+    top_source_ip_ratio: float = 0.0
 
     @property
     def duration_seconds(self) -> float:
@@ -84,4 +88,6 @@ class DetectionAlert:
     severity: Severity
     description: str
     confidence: float
+    attack_type: str = "UNKNOWN"
+    distribution_confidence: float = 0.0
     metrics_snapshot: dict[str, Any] = field(default_factory=dict)

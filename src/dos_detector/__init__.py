@@ -7,6 +7,12 @@ attack patterns using configurable rules and anomaly detection.
 from dos_detector.alerting import AlertSink, InMemoryAlertSink
 from dos_detector.config import DetectionConfig
 from dos_detector.detector import BaseDetector, RuleBasedDetector
+from dos_detector.features import (
+    SlidingWindowAggregator,
+    compute_shannon_entropy,
+    compute_window_features,
+    stream_sliding_windows,
+)
 from dos_detector.ingestion import (
     CIC_IDS2017_CSV_MAPPING,
     CsvFieldMapping,
@@ -33,8 +39,12 @@ __all__ = [
     "PacketRecord",
     "RuleBasedDetector",
     "Severity",
+    "SlidingWindowAggregator",
     "TrafficWindow",
     "__version__",
+    "compute_shannon_entropy",
+    "compute_window_features",
     "stream_csv",
     "stream_pcap",
+    "stream_sliding_windows",
 ]

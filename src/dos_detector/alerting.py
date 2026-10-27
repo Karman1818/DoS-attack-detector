@@ -43,7 +43,8 @@ class ConsoleAlertSink:
 
     def emit(self, alert: DetectionAlert) -> None:
         """Format and print alert details safely without dumping raw payloads."""
+        type_str = f" | Type: {alert.attack_type}" if alert.attack_type != "UNKNOWN" else ""
         print(
-            f"[{alert.severity.value}] {alert.rule_name} @ {alert.timestamp:.2f}s "
+            f"[{alert.severity.value}] {alert.rule_name}{type_str} @ {alert.timestamp:.2f}s "
             f"(Confidence: {alert.confidence * 100:.0f}%): {alert.description}"
         )

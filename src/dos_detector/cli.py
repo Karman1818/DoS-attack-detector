@@ -24,7 +24,7 @@ from dos_detector import __version__
 from dos_detector.alerting import ConsoleAlertSink
 from dos_detector.config import DetectionConfig
 from dos_detector.detector import RuleBasedDetector
-from dos_detector.features import compute_window_features
+from dos_detector.features import SlidingWindowAggregator
 from dos_detector.ingestion import (
     CIC_IDS2017_CSV_MAPPING,
     stream_csv,
@@ -105,48 +105,34 @@ def _process_packet_stream(
     packet_stream: Iterable[PacketRecord],
     config: DetectionConfig,
     source_desc: str,
+    step_size: float = 0.2,
 ) -> None:
-    """Run window feature extraction and detection engine on packet stream."""
+    """Run sliding window feature extraction and detection engine on packet stream."""
     sink = ConsoleAlertSink()
     detector = RuleBasedDetector(config=config)
+    aggregator = SlidingWindowAggregator(
+        window_size=config.window_size_seconds,
+        step_size=step_size,
+    )
 
     print("\n" + "=" * 70)
     print(f"[*] Analyzing Network Traffic Source: {source_desc}")
     print(
-        f"[*] Window Size: {config.window_size_seconds}s | SYN Flood Threshold: {config.syn_flood_pps_threshold} pps"
+        f"[*] Window Size: {config.window_size_seconds}s | Slide Step: {step_size}s | "
+        f"SYN Threshold: {config.syn_flood_pps_threshold} pps"
     )
     print("=" * 70 + "\n")
 
-    current_window_packets: list[PacketRecord] = []
-    window_start: float | None = None
     total_packets_inspected = 0
     total_alerts_emitted = 0
 
-    for pkt in packet_stream:
-        total_packets_inspected += 1
-        if window_start is None:
-            window_start = pkt.timestamp
+    def _counted_packets() -> Iterable[PacketRecord]:
+        nonlocal total_packets_inspected
+        for pkt in packet_stream:
+            total_packets_inspected += 1
+            yield pkt
 
-        # Check if packet exceeds current time window
-        if pkt.timestamp - window_start >= config.window_size_seconds:
-            window_end = window_start + config.window_size_seconds
-            window = compute_window_features(current_window_packets, window_start, window_end)
-
-            alerts = detector.evaluate_window(window)
-            for alert in alerts:
-                total_alerts_emitted += 1
-                sink.emit(alert)
-
-            # Advance window
-            current_window_packets = [pkt]
-            window_start = pkt.timestamp
-        else:
-            current_window_packets.append(pkt)
-
-    # Process final window
-    if current_window_packets and window_start is not None:
-        window_end = max(window_start + 0.001, current_window_packets[-1].timestamp)
-        window = compute_window_features(current_window_packets, window_start, window_end)
+    for window in aggregator.aggregate(_counted_packets()):
         alerts = detector.evaluate_window(window)
         for alert in alerts:
             total_alerts_emitted += 1
@@ -172,7 +158,12 @@ def cmd_demo(args: argparse.Namespace) -> None:
         window_size_seconds=args.window,
         syn_flood_pps_threshold=args.syn_threshold,
     )
-    _process_packet_stream(stream_pcap(sample_file), config, str(sample_file))
+    _process_packet_stream(
+        stream_pcap(sample_file),
+        config,
+        str(sample_file),
+        step_size=args.step,
+    )
 
 
 def cmd_pcap(args: argparse.Namespace) -> None:
@@ -186,7 +177,12 @@ def cmd_pcap(args: argparse.Namespace) -> None:
         window_size_seconds=args.window,
         syn_flood_pps_threshold=args.syn_threshold,
     )
-    _process_packet_stream(stream_pcap(pcap_path), config, str(pcap_path))
+    _process_packet_stream(
+        stream_pcap(pcap_path),
+        config,
+        str(pcap_path),
+        step_size=args.step,
+    )
 
 
 def cmd_csv(args: argparse.Namespace) -> None:
@@ -201,7 +197,12 @@ def cmd_csv(args: argparse.Namespace) -> None:
         syn_flood_pps_threshold=args.syn_threshold,
     )
     mapping = CIC_IDS2017_CSV_MAPPING if args.cic else None
-    _process_packet_stream(stream_csv(csv_path, mapping=mapping), config, str(csv_path))
+    _process_packet_stream(
+        stream_csv(csv_path, mapping=mapping),
+        config,
+        str(csv_path),
+        step_size=args.step,
+    )
 
 
 def main() -> None:
@@ -231,6 +232,12 @@ def main() -> None:
         default=100.0,
         help="SYN packets per second threshold (default: 100.0)",
     )
+    parser_demo.add_argument(
+        "--step",
+        type=float,
+        default=0.2,
+        help="Sliding step size in seconds (default: 0.2)",
+    )
     parser_demo.set_defaults(func=cmd_demo)
 
     # Subcommand: pcap
@@ -241,6 +248,12 @@ def main() -> None:
         type=float,
         default=1.0,
         help="Time window size in seconds (default: 1.0)",
+    )
+    parser_pcap.add_argument(
+        "--step",
+        type=float,
+        default=0.2,
+        help="Sliding step size in seconds (default: 0.2)",
     )
     parser_pcap.add_argument(
         "--syn-threshold",
@@ -263,6 +276,12 @@ def main() -> None:
         type=float,
         default=1.0,
         help="Time window size in seconds (default: 1.0)",
+    )
+    parser_csv.add_argument(
+        "--step",
+        type=float,
+        default=0.2,
+        help="Sliding step size in seconds (default: 0.2)",
     )
     parser_csv.add_argument(
         "--syn-threshold",

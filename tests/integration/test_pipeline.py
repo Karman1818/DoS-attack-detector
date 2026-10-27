@@ -9,7 +9,7 @@ from scapy.utils import wrpcap
 from dos_detector.alerting import InMemoryAlertSink
 from dos_detector.config import DetectionConfig
 from dos_detector.detector import RuleBasedDetector
-from dos_detector.features import compute_window_features
+from dos_detector.features import compute_window_features, stream_sliding_windows
 from dos_detector.ingestion import stream_pcap
 from dos_detector.models import PacketRecord
 
@@ -70,3 +70,37 @@ def test_pcap_file_to_detection_pipeline(tmp_path: Path, default_config: Detecti
 
     assert len(alerts) >= 1
     assert any(a.rule_name == "SYN_FLOOD_SUSPECTED" for a in alerts)
+
+
+@pytest.mark.integration
+def test_sliding_window_stream_integration(tmp_path: Path, default_config: DetectionConfig) -> None:
+    # 150 packets spread across 2.0s
+    pcap_path = tmp_path / "sliding_test.pcap"
+    packets = [
+        IP(src=f"10.0.0.{1 + (i % 30)}", dst="192.168.1.1")
+        / TCP(sport=50000 + i, dport=80, flags="S")
+        for i in range(150)
+    ]
+    for i, pkt in enumerate(packets):
+        pkt.time = 3000.0 + (i * 0.01)  # 100 packets/sec over 1.5s
+
+    wrpcap(str(pcap_path), packets)
+
+    # Full decoupled pipeline: PCAP -> Sliding Windows -> Detector -> Sink
+    packet_stream = stream_pcap(pcap_path)
+    window_stream = stream_sliding_windows(packet_stream, window_size=1.0, step_size=0.2)
+
+    detector = RuleBasedDetector(config=default_config)
+    sink = InMemoryAlertSink()
+
+    windows_count = 0
+    for window in window_stream:
+        windows_count += 1
+        for alert in detector.evaluate_window(window):
+            sink.emit(alert)
+
+    # Multiple overlapping windows should be produced
+    assert windows_count >= 3
+    # High SYN rate across 30 IPs should trigger distributed DDoS detection
+    assert len(sink.alerts) >= 1
+    assert any(a.attack_type == "DISTRIBUTED_DOS (DDoS)" for a in sink.alerts)
