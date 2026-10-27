@@ -29,7 +29,12 @@ class DetectionConfig:
     dns_flood_pps_threshold: float = 500.0
     dns_ratio_threshold: float = 0.50
     udp_flood_pps_threshold: float = 1_000.0
-    udp_ratio_threshold: float = 0.70
+    udp_ratio_threshold: float = 0.60
+
+    # Layer 7 HTTP application flood thresholds (WebDDoS)
+    http_flood_pps_threshold: float = 30.0
+    min_http_requests: int = 30
+    http_uri_repetition_threshold: float = 0.60
 
     # Minimum target concentration ratio to qualify high-volume traffic as targeted attack
     target_concentration_threshold: float = 0.60
@@ -66,6 +71,15 @@ class DetectionConfig:
             raise ValueError(msg)
         if self.udp_flood_pps_threshold <= 0:
             msg = f"udp_flood_pps_threshold must be positive, got {self.udp_flood_pps_threshold}"
+            raise ValueError(msg)
+        if self.http_flood_pps_threshold <= 0:
+            msg = f"http_flood_pps_threshold must be positive, got {self.http_flood_pps_threshold}"
+            raise ValueError(msg)
+        if self.min_http_requests < 1:
+            msg = f"min_http_requests must be >= 1, got {self.min_http_requests}"
+            raise ValueError(msg)
+        if not (0.0 < self.http_uri_repetition_threshold <= 1.0):
+            msg = f"http_uri_repetition_threshold must be in (0, 1], got {self.http_uri_repetition_threshold}"
             raise ValueError(msg)
         if self.min_consecutive_windows < 1:
             msg = f"min_consecutive_windows must be >= 1, got {self.min_consecutive_windows}"

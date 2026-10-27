@@ -126,3 +126,26 @@ def test_stream_csv_cic_ids2017_mapping(tmp_path: Path) -> None:
     assert r.dst_port == 55555
     assert r.packet_size == 1500
     assert "SYN" in r.tcp_flags
+
+
+@pytest.mark.unit
+def test_stream_pcap_extracts_http_metadata(tmp_path: Path) -> None:
+    """Verify that HTTP GET requests on port 80 are parsed with method and normalized URI."""
+    from scapy.packet import Raw
+
+    pcap_file = tmp_path / "http_sample.pcap"
+    eth = Ether(src="00:11:22:33:44:55", dst="66:77:88:99:aa:bb")
+    http_payload = b"GET /c.php?session=abc123xyz HTTP/1.1\r\nHost: target.local\r\n\r\n"
+    pkt = (
+        eth
+        / IP(src="192.168.1.50", dst="192.168.1.1")
+        / TCP(sport=43210, dport=80, flags="PA")
+        / Raw(load=http_payload)
+    )
+
+    wrpcap(str(pcap_file), [pkt])
+    records = list(stream_pcap(pcap_file))
+    assert len(records) == 1
+    r = records[0]
+    assert r.http_method == "GET"
+    assert r.http_uri == "/c.php"

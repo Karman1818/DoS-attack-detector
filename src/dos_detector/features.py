@@ -68,6 +68,17 @@ def compute_window_features(
     icmp_count = sum(1 for pkt in records if pkt.protocol.upper() == "ICMP")
     dns_count = sum(1 for pkt in records if (pkt.src_port == 53 or pkt.dst_port == 53))
 
+    # Layer 7 HTTP metrics extraction
+    http_packets = [pkt for pkt in records if pkt.http_method is not None]
+    http_request_count = len(http_packets)
+    uri_counter = Counter(pkt.http_uri for pkt in http_packets if pkt.http_uri)
+    top_http_uri: str | None = None
+    top_http_uri_ratio = 0.0
+    if uri_counter and http_request_count > 0:
+        most_common_uri = uri_counter.most_common(1)[0]
+        top_http_uri = most_common_uri[0]
+        top_http_uri_ratio = most_common_uri[1] / http_request_count
+
     # IP distribution and entropy calculations
     ip_counter = Counter(pkt.src_ip for pkt in records if pkt.src_ip)
     ip_packets_total = sum(ip_counter.values())
@@ -124,6 +135,9 @@ def compute_window_features(
         udp_count=udp_count,
         icmp_count=icmp_count,
         dns_count=dns_count,
+        http_request_count=http_request_count,
+        top_http_uri=top_http_uri,
+        top_http_uri_ratio=top_http_uri_ratio,
         unique_dst_ips=unique_dst_ips,
         top_dst_ip=top_dst_ip,
         top_dst_ip_ratio=top_dst_ip_ratio,

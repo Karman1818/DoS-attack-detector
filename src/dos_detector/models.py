@@ -35,6 +35,9 @@ class PacketRecord:
     dst_port: int | None = None
     packet_size: int = 0
     tcp_flags: frozenset[str] = field(default_factory=frozenset)
+    # Layer 7 (Application) metadata
+    http_method: str | None = None
+    http_uri: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +64,10 @@ class TrafficWindow:
     udp_count: int = 0
     icmp_count: int = 0
     dns_count: int = 0
+    # Layer 7 HTTP metrics
+    http_request_count: int = 0
+    top_http_uri: str | None = None
+    top_http_uri_ratio: float = 0.0
     # Destination target metrics (for DDoS target concentration analysis)
     unique_dst_ips: int = 0
     top_dst_ip: str | None = None
@@ -114,6 +121,16 @@ class TrafficWindow:
     def tcp_ratio(self) -> float:
         """Calculate the proportion of TCP packets in the window."""
         return self.tcp_count / self.total_packets if self.total_packets > 0 else 0.0
+
+    @property
+    def http_pps(self) -> float:
+        """Calculate HTTP requests per second within the window."""
+        return self.http_request_count / self.duration_seconds if self.duration_seconds > 0 else 0.0
+
+    @property
+    def http_ratio(self) -> float:
+        """Calculate the proportion of HTTP request packets in the window."""
+        return self.http_request_count / self.total_packets if self.total_packets > 0 else 0.0
 
 
 @dataclass(frozen=True, slots=True)

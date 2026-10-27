@@ -19,7 +19,7 @@ _old_stderr = sys.stderr
 try:
     sys.stderr = io.StringIO()
     from scapy.layers.inet import ICMP, IP, TCP, UDP
-    from scapy.packet import Packet
+    from scapy.packet import Packet, Raw
     from scapy.utils import PcapReader
 finally:
     sys.stderr = _old_stderr
@@ -95,6 +95,8 @@ def _packet_to_record(pkt: Packet) -> PacketRecord | None:
     src_port: int | None = None
     dst_port: int | None = None
     flags: frozenset[str] = frozenset()
+    http_method: str | None = None
+    http_uri: str | None = None
 
     if pkt.haslayer(TCP):
         tcp_layer = pkt[TCP]
@@ -102,6 +104,20 @@ def _packet_to_record(pkt: Packet) -> PacketRecord | None:
         src_port = int(tcp_layer.sport)
         dst_port = int(tcp_layer.dport)
         flags = _parse_scapy_flags(tcp_layer.flags)
+
+        # Inspect Layer 7 HTTP requests (e.g., HTTP GET/POST Flood / WebDDoS)
+        if (dst_port in (80, 8080, 443) or src_port in (80, 8080, 443)) and pkt.haslayer(Raw):
+            try:
+                load = bytes(pkt[Raw].load)
+                if load.startswith((b"GET ", b"POST ", b"HEAD ", b"PUT ", b"DELETE ")):
+                    tokens = load.split(b" ", 2)
+                    if len(tokens) >= 2:
+                        http_method = tokens[0].decode("ascii", errors="ignore")
+                        # Normalize path and discard query string for endpoint clustering
+                        raw_uri = tokens[1].decode("ascii", errors="ignore")
+                        http_uri = raw_uri.split("?")[0]
+            except (UnicodeDecodeError, ValueError, IndexError) as exc:
+                logger.debug("Failed to decode HTTP payload: %s", exc)
     elif pkt.haslayer(UDP):
         udp_layer = pkt[UDP]
         protocol = "UDP"
@@ -109,6 +125,10 @@ def _packet_to_record(pkt: Packet) -> PacketRecord | None:
         dst_port = int(udp_layer.dport)
     elif pkt.haslayer(ICMP):
         protocol = "ICMP"
+    elif ip_layer.proto == 17:
+        protocol = "UDP"
+    elif ip_layer.proto == 6:
+        protocol = "TCP"
     else:
         protocol = str(ip_layer.proto)
 
@@ -121,6 +141,8 @@ def _packet_to_record(pkt: Packet) -> PacketRecord | None:
         dst_port=dst_port,
         packet_size=packet_size,
         tcp_flags=flags,
+        http_method=http_method,
+        http_uri=http_uri,
     )
 
 

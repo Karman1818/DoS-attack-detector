@@ -108,6 +108,7 @@ def _build_detection_config(args: argparse.Namespace) -> DetectionConfig:
         syn_flood_pps_threshold=args.syn_threshold,
         packet_flood_pps_threshold=args.pps_threshold,
         dns_flood_pps_threshold=args.dns_threshold,
+        http_flood_pps_threshold=args.http_threshold,
         min_consecutive_windows=args.min_consecutive,
         alert_cooldown_seconds=args.cooldown,
     )
@@ -127,20 +128,45 @@ def _process_packet_stream(
         step_size=step_size,
     )
 
-    print("\n" + "=" * 75)
+    print("\n" + "=" * 88)
     print(f"[*] Analyzing Network Traffic Source: {source_desc}")
     print(
-        f"[*] Window: {config.window_size_seconds}s (step: {step_size}s) | "
-        f"Min Consecutive Windows: {config.min_consecutive_windows} | "
-        f"Alert Cooldown: {config.alert_cooldown_seconds}s"
+        f"[*] Observation Horizon: Window={config.window_size_seconds}s (step={step_size}s) | "
+        f"Min Consecutive={config.min_consecutive_windows} | "
+        f"Alert Cooldown={config.alert_cooldown_seconds}s"
+    )
+    print("[*] Active Detection Engine Thresholds (Prioritized by Attack Specificity):")
+    print(
+        "+---------------------------+---------------+------------------------------------------+"
     )
     print(
-        f"[*] Thresholds: Packet Flood >= {config.packet_flood_pps_threshold:.0f} pps | "
-        f"SYN Flood >= {config.syn_flood_pps_threshold:.0f} pps (ratio >= {config.syn_ack_ratio_threshold:.1f}) | "
-        f"DNS Flood >= {config.dns_flood_pps_threshold:.0f} pps | "
-        f"Volumetric >= {config.volumetric_bps_threshold / 1_000_000:.1f} MB/s"
+        "| Heuristic Rule            | Threshold     | Trigger Condition                        |"
     )
-    print("=" * 75 + "\n")
+    print(
+        "+---------------------------+---------------+------------------------------------------+"
+    )
+    print(
+        f"| DNS Flood (L4/L7)         | >= {config.dns_flood_pps_threshold:.0f} pps    | Port 53 UDP/TCP | DRDoS Amplification    |"
+    )
+    print(
+        f"| HTTP WebDDoS (L7)         | >= {config.http_flood_pps_threshold:.0f} req/s   | Ports 80/8080 | URI Repetition >= {config.http_uri_repetition_threshold * 100:.0f}%   |"
+    )
+    print(
+        f"| TCP SYN Flood (L4)        | >= {config.syn_flood_pps_threshold:.0f} pps    | SYN/ACK >= {config.syn_ack_ratio_threshold:.1f} OR (>=500 pps & SYN>=70%) |"
+    )
+    print(
+        f"| UDP Flood (General)       | >= {config.udp_flood_pps_threshold:.0f} pps   | UDP Ratio >= {config.udp_ratio_threshold * 100:.0f}% (non-DNS fallback)      |"
+    )
+    print(
+        f"| Volumetric Throughput     | >= {config.volumetric_bps_threshold / 1_000_000:.1f} MB/s  | Bandwidth byte flood fallback            |"
+    )
+    print(
+        f"| Packet Rate Flood (Gen)   | >= {config.packet_flood_pps_threshold:.0f} pps   | Focused packet flood fallback            |"
+    )
+    print(
+        "+---------------------------+---------------+------------------------------------------+"
+    )
+    print("=" * 88 + "\n")
 
     total_packets_inspected = 0
     total_alerts_emitted = 0
@@ -246,6 +272,12 @@ def _add_common_detection_args(subparser: argparse.ArgumentParser) -> None:
         type=float,
         default=500.0,
         help="DNS packet flood threshold in pps (default: 500.0)",
+    )
+    subparser.add_argument(
+        "--http-threshold",
+        type=float,
+        default=30.0,
+        help="HTTP application request flood threshold in req/s (default: 30.0)",
     )
     subparser.add_argument(
         "--min-consecutive",

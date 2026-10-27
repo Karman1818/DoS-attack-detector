@@ -334,3 +334,125 @@ def test_multi_target_benign_transit_traffic_not_flagged_as_ddos() -> None:
     detector = RuleBasedDetector()
     alerts = detector.evaluate_window(window)
     assert len(alerts) == 0
+
+
+@pytest.mark.unit
+def test_http_web_ddos_detection() -> None:
+    """Validate detection of Layer 7 repetitive HTTP GET flood (WebDDoS) targeting /c.php."""
+    config = DetectionConfig(
+        http_flood_pps_threshold=30.0,
+        min_http_requests=30,
+        http_uri_repetition_threshold=0.60,
+        min_consecutive_windows=1,
+    )
+    detector = RuleBasedDetector(config=config)
+
+    # Simulating CIC-DDoS-2019-WebDDoS: 200 HTTP requests in 1.0s window, 90% targeting /c.php
+    window = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=300,
+        total_bytes=150_000,
+        packet_rate=300.0,
+        byte_rate=150_000.0,
+        syn_count=10,
+        ack_count=90,
+        rst_count=0,
+        unique_src_ips=5,
+        unique_dst_ports=1,
+        tcp_count=300,
+        http_request_count=200,
+        top_http_uri="/c.php",
+        top_http_uri_ratio=0.90,
+        top_dst_ip="192.168.50.4",
+        top_dst_ip_ratio=0.95,
+        top_dst_port=80,
+        top_dst_port_ratio=0.95,
+    )
+
+    alerts = detector.evaluate_window(window)
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.rule_name == "HTTP_WEB_DDOS_SUSPECTED"
+    assert alert.severity == Severity.HIGH
+    assert "/c.php" in alert.description
+    assert alert.metrics_snapshot["top_http_uri"] == "/c.php"
+    assert alert.metrics_snapshot["top_http_uri_ratio"] == 0.90
+
+
+@pytest.mark.unit
+def test_massive_syn_flood_with_server_responses_triggers_high_alert() -> None:
+    """Ensure massive SYN flood (>26k pps) triggers alert even if server replies with SYN-ACK/RST."""
+    config = DetectionConfig(
+        syn_flood_pps_threshold=100.0,
+        syn_ack_ratio_threshold=3.0,
+        min_consecutive_windows=1,
+    )
+    detector = RuleBasedDetector(config=config)
+
+    # Simulating CIC-DDoS-2019-SynFlood: 26,000 pps, server responds with ACKs (ratio=1.2 < 3.0)
+    # But syn_pps = 14,000 and syn_ratio_in_tcp = 70%
+    window = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=26_000,
+        total_bytes=1_600_000,
+        packet_rate=26_000.0,
+        byte_rate=1_600_000.0,
+        syn_count=18_000,
+        ack_count=8_000,
+        rst_count=500,
+        tcp_count=26_000,
+        unique_src_ips=150,
+        unique_dst_ports=1,
+        top_dst_ip="192.168.50.4",
+        top_dst_ip_ratio=0.99,
+        top_dst_port=80,
+        top_dst_port_ratio=0.99,
+        normalized_ip_entropy=0.95,
+    )
+
+    alerts = detector.evaluate_window(window)
+    assert len(alerts) >= 1
+    syn_alert = next((a for a in alerts if a.rule_name == "SYN_FLOOD_SUSPECTED"), None)
+    assert syn_alert is not None
+    assert syn_alert.severity == Severity.HIGH
+    # Should NOT be shadowed or subsumed by general PACKET_RATE_FLOOD
+    assert not any(a.rule_name == "PACKET_RATE_FLOOD_SUSPECTED" for a in alerts)
+
+
+@pytest.mark.unit
+def test_rule_priority_dns_before_udp_flood() -> None:
+    """Ensure DNS flood on port 53 is prioritized over generic UDP flood."""
+    config = DetectionConfig(
+        dns_flood_pps_threshold=500.0,
+        udp_flood_pps_threshold=1000.0,
+        min_consecutive_windows=1,
+    )
+    detector = RuleBasedDetector(config=config)
+
+    window = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=5200,
+        total_bytes=3_000_000,
+        packet_rate=5200.0,
+        byte_rate=3_000_000.0,
+        syn_count=0,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        udp_count=5200,
+        dns_count=5200,
+        top_dst_ip="192.168.50.1",
+        top_dst_ip_ratio=1.0,
+        top_dst_port=53,
+        top_dst_port_ratio=1.0,
+    )
+
+    alerts = detector.evaluate_window(window)
+    rule_names = [a.rule_name for a in alerts]
+    assert "DNS_FLOOD_SUSPECTED" in rule_names
+    assert "UDP_FLOOD_SUSPECTED" not in rule_names
+    assert "PACKET_RATE_FLOOD_SUSPECTED" not in rule_names

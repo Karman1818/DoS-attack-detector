@@ -38,41 +38,7 @@ def classify_attack_distribution(window: TrafficWindow) -> AttackClassification:
     Returns:
         AttackClassification containing attack_type, probabilities (DoS % vs DDoS %), and explanation.
     """
-    # Vector Check 1: DNS Amplification / Reflection (DRDoS)
-    # In datasets like CIC-DDoS-2019, DNS floods are distributed reflection DDoS attacks
-    # where an attacker abuses open DNS resolvers or floods from an attack infrastructure node.
-    if window.dns_count >= 10 and window.dns_pps >= 200.0 and window.dns_ratio >= 0.50:
-        ddos_prob = 0.90 if window.dns_pps < 2000.0 else 0.95
-        dos_prob = round(1.0 - ddos_prob, 2)
-        return AttackClassification(
-            attack_type="DISTRIBUTED_DOS (DRDoS Amplification)",
-            confidence=ddos_prob,
-            dos_probability=dos_prob,
-            ddos_probability=ddos_prob,
-            explanation=(
-                f"Distributed Reflection Denial-of-Service (DRDoS) suspected "
-                f"({ddos_prob * 100:.0f}% DDoS vs {dos_prob * 100:.0f}% DoS): "
-                f"DNS amplification/reflection vector utilizing port 53 ({window.dns_pps:.1f} DNS pps)."
-            ),
-        )
-
-    # Vector Check 2: High-Rate UDP Flood DDoS
-    if window.udp_count >= 10 and window.udp_pps >= 500.0 and window.udp_ratio >= 0.60:
-        ddos_prob = 0.90
-        dos_prob = 0.10
-        return AttackClassification(
-            attack_type="DISTRIBUTED_DOS (UDP Flood DDoS)",
-            confidence=ddos_prob,
-            dos_probability=dos_prob,
-            ddos_probability=ddos_prob,
-            explanation=(
-                f"Distributed UDP Flood DDoS suspected "
-                f"({ddos_prob * 100:.0f}% DDoS vs {dos_prob * 100:.0f}% DoS): "
-                f"High-rate UDP flood ({window.udp_pps:.1f} UDP pps, {window.udp_ratio * 100:.1f}% traffic)."
-            ),
-        )
-
-    # Check for multi-target benign transit traffic (many sources to many destinations)
+    # Check for multi-target benign transit traffic (many sources to many destinations) (many sources to many destinations)
     # In benign browsing/transit, packets disperse across numerous destination IPs
     is_multi_target_transit = (
         window.unique_dst_ips >= 5
@@ -134,11 +100,11 @@ def classify_attack_distribution(window: TrafficWindow) -> AttackClassification:
 
     # If packet rate is extreme (> 5000 pps), high likelihood of botnet node or high-volume DDoS generator
     if window.packet_rate >= 5000.0:
-        ddos_prob = 0.70
-        dos_prob = 0.30
+        ddos_prob = 0.85
+        dos_prob = 0.15
         return AttackClassification(
             attack_type="DISTRIBUTED_DOS (High-Rate Botnet Generator Suspected)",
-            confidence=0.70,
+            confidence=0.85,
             dos_probability=dos_prob,
             ddos_probability=ddos_prob,
             explanation=(
@@ -217,7 +183,7 @@ class RuleBasedDetector(BaseDetector):
         return True
 
     def evaluate_window(self, window: TrafficWindow) -> list[DetectionAlert]:
-        """Evaluate traffic window against configured DoS heuristics."""
+        """Evaluate traffic window against prioritized DoS heuristics."""
         alerts: list[DetectionAlert] = []
 
         cls = classify_attack_distribution(window)
@@ -227,11 +193,23 @@ class RuleBasedDetector(BaseDetector):
         ddos_prob = cls.ddos_probability
         dist_explanation = cls.explanation
 
-        # Heuristic 1: DNS Amplification / Reflection / Query Flood Detection (Port 53)
-        is_dns_flood = (
-            window.dns_count >= self.config.min_packets_for_ratio_eval
-            and window.dns_pps >= self.config.dns_flood_pps_threshold
-            and window.dns_ratio >= self.config.dns_ratio_threshold
+        # -------------------------------------------------------------------------
+        # Tier 1 Priority: Specific Protocol & Application Attack Vectors (L4 & L7)
+        # -------------------------------------------------------------------------
+
+        # Priority Vector 1: DNS Amplification / Reflection / Flood Detection (Port 53 UDP/TCP)
+        # Robust against IP fragmentation and asymmetric query/response ratios
+        is_dns_flood = window.dns_count >= self.config.min_packets_for_ratio_eval and (
+            (
+                window.dns_pps >= self.config.dns_flood_pps_threshold
+                and window.dns_ratio >= self.config.dns_ratio_threshold
+            )
+            or (
+                window.dns_pps >= 300.0
+                and window.udp_count > 0
+                and (window.dns_count / window.udp_count) >= 0.35
+            )
+            or (window.dns_pps >= 1000.0)
         )
         if self._should_emit("DNS_FLOOD_SUSPECTED", is_dns_flood, window.end_time):
             alerts.append(
@@ -262,7 +240,99 @@ class RuleBasedDetector(BaseDetector):
                 )
             )
 
-        # Heuristic 2: General UDP Flood Detection (non-DNS)
+        # Priority Vector 2: Layer 7 HTTP WebDDoS Application Flood (Port 80/8080/443)
+        # Detects low-rate and high-rate repeated endpoint targeting (e.g., GET /c.php)
+        is_http_flood = window.http_request_count >= self.config.min_http_requests and (
+            (
+                window.top_http_uri_ratio >= self.config.http_uri_repetition_threshold
+                and window.http_pps >= self.config.http_flood_pps_threshold
+            )
+            or (
+                window.http_pps >= (self.config.http_flood_pps_threshold * 2.0)
+                and window.top_dst_ip_ratio >= 0.70
+            )
+        )
+        if self._should_emit("HTTP_WEB_DDOS_SUSPECTED", is_http_flood, window.end_time):
+            uri_info = f" targeting endpoint '{window.top_http_uri}'" if window.top_http_uri else ""
+            alerts.append(
+                DetectionAlert(
+                    timestamp=window.end_time,
+                    rule_name="HTTP_WEB_DDOS_SUSPECTED",
+                    severity=Severity.HIGH,
+                    attack_type=attack_type,
+                    distribution_confidence=dist_conf,
+                    dos_probability=dos_prob,
+                    ddos_probability=ddos_prob,
+                    description=(
+                        f"Repetitive HTTP application flood{uri_info} "
+                        f"({window.top_http_uri_ratio * 100:.1f}% URI concentration, "
+                        f"{window.http_pps:.1f} req/s). {dist_explanation}"
+                    ),
+                    confidence=0.88,
+                    metrics_snapshot={
+                        "http_request_count": window.http_request_count,
+                        "http_pps": window.http_pps,
+                        "top_http_uri": window.top_http_uri,
+                        "top_http_uri_ratio": window.top_http_uri_ratio,
+                        "attack_type": attack_type,
+                        "distribution_confidence": dist_conf,
+                        "dos_probability": dos_prob,
+                        "ddos_probability": ddos_prob,
+                    },
+                )
+            )
+
+        # Priority Vector 3: TCP SYN Flood Detection
+        # Detects classic SYN floods as well as massive floods (>26k pps) where victim server responds with RST/SYN-ACK
+        syn_pps = window.syn_count / window.duration_seconds if window.duration_seconds > 0 else 0
+        syn_ratio_in_tcp = window.syn_count / max(1, window.tcp_count)
+        is_syn_flood = window.syn_count >= self.config.min_packets_for_ratio_eval and (
+            (
+                syn_pps >= self.config.syn_flood_pps_threshold
+                and window.syn_ack_ratio >= self.config.syn_ack_ratio_threshold
+            )
+            or (syn_pps >= 500.0 and syn_ratio_in_tcp >= 0.70)
+            or (syn_pps >= 2000.0)
+        )
+        if self._should_emit("SYN_FLOOD_SUSPECTED", is_syn_flood, window.end_time):
+            alerts.append(
+                DetectionAlert(
+                    timestamp=window.end_time,
+                    rule_name="SYN_FLOOD_SUSPECTED",
+                    severity=Severity.HIGH,
+                    attack_type=attack_type,
+                    distribution_confidence=dist_conf,
+                    dos_probability=dos_prob,
+                    ddos_probability=ddos_prob,
+                    description=(
+                        f"High rate of TCP SYN flood packets ({syn_pps:.1f} SYN/s, "
+                        f"SYN/ACK ratio: {window.syn_ack_ratio:.2f}, "
+                        f"SYN/TCP ratio: {syn_ratio_in_tcp * 100:.1f}%). {dist_explanation}"
+                    ),
+                    confidence=0.90,
+                    metrics_snapshot={
+                        "syn_count": window.syn_count,
+                        "ack_count": window.ack_count,
+                        "tcp_count": window.tcp_count,
+                        "syn_pps": syn_pps,
+                        "syn_ack_ratio": window.syn_ack_ratio,
+                        "syn_ratio_in_tcp": syn_ratio_in_tcp,
+                        "attack_type": attack_type,
+                        "distribution_confidence": dist_conf,
+                        "dos_probability": dos_prob,
+                        "ddos_probability": ddos_prob,
+                        "ip_entropy": window.ip_entropy,
+                        "normalized_ip_entropy": window.normalized_ip_entropy,
+                    },
+                )
+            )
+
+        # -------------------------------------------------------------------------
+        # Tier 2 Priority: General & Fallback Flood Heuristics (UDP / Volumetric / Rate)
+        # -------------------------------------------------------------------------
+        has_specific_vector = bool(is_dns_flood or is_http_flood or is_syn_flood)
+
+        # Fallback Heuristic 4: General UDP Flood Detection (non-DNS)
         is_udp_flood = (
             not is_dns_flood
             and window.udp_count >= self.config.min_packets_for_ratio_eval
@@ -297,50 +367,7 @@ class RuleBasedDetector(BaseDetector):
                 )
             )
 
-        # Heuristic 3: TCP SYN Flood Detection
-        syn_pps = window.syn_count / window.duration_seconds if window.duration_seconds > 0 else 0
-        syn_ratio_in_tcp = window.syn_count / max(1, window.tcp_count)
-        is_syn_flood = (
-            syn_pps >= self.config.syn_flood_pps_threshold
-            and window.total_packets >= self.config.min_packets_for_ratio_eval
-            and window.syn_ack_ratio >= self.config.syn_ack_ratio_threshold
-            and (
-                window.tcp_count == 0 or syn_ratio_in_tcp >= self.config.syn_ratio_in_tcp_threshold
-            )
-        )
-        if self._should_emit("SYN_FLOOD_SUSPECTED", is_syn_flood, window.end_time):
-            alerts.append(
-                DetectionAlert(
-                    timestamp=window.end_time,
-                    rule_name="SYN_FLOOD_SUSPECTED",
-                    severity=Severity.HIGH,
-                    attack_type=attack_type,
-                    distribution_confidence=dist_conf,
-                    dos_probability=dos_prob,
-                    ddos_probability=ddos_prob,
-                    description=(
-                        f"High rate of unacknowledged SYN packets ({syn_pps:.1f} SYN/s, "
-                        f"SYN/ACK ratio: {window.syn_ack_ratio:.2f}). {dist_explanation}"
-                    ),
-                    confidence=0.85,
-                    metrics_snapshot={
-                        "syn_count": window.syn_count,
-                        "ack_count": window.ack_count,
-                        "tcp_count": window.tcp_count,
-                        "syn_pps": syn_pps,
-                        "syn_ack_ratio": window.syn_ack_ratio,
-                        "syn_ratio_in_tcp": syn_ratio_in_tcp,
-                        "attack_type": attack_type,
-                        "distribution_confidence": dist_conf,
-                        "dos_probability": dos_prob,
-                        "ddos_probability": ddos_prob,
-                        "ip_entropy": window.ip_entropy,
-                        "normalized_ip_entropy": window.normalized_ip_entropy,
-                    },
-                )
-            )
-
-        # Heuristic 4: Volumetric Traffic Flood (Byte throughput)
+        # Fallback Heuristic 5: Volumetric Traffic Flood (Byte throughput)
         is_volumetric = window.byte_rate >= self.config.volumetric_bps_threshold
         if self._should_emit("VOLUMETRIC_FLOOD_SUSPECTED", is_volumetric, window.end_time):
             alerts.append(
@@ -371,9 +398,9 @@ class RuleBasedDetector(BaseDetector):
                 )
             )
 
-        # Heuristic 5: High Packet-Rate Flood
-        # Subsumes generic rate alert if a specific protocol flood was already identified,
-        # and requires victim target concentration or extreme volume to filter transit bursts
+        # Fallback Heuristic 6: High Packet-Rate Flood
+        # Subsumed if a specific protocol vector was already identified,
+        # requiring victim target concentration or extreme volume to filter benign transit bursts
         target_conc = max(window.top_dst_ip_ratio, window.top_dst_port_ratio)
         is_targeted_or_extreme = (
             window.unique_dst_ports <= 1
@@ -383,8 +410,7 @@ class RuleBasedDetector(BaseDetector):
         )
         is_packet_flood = (
             window.packet_rate >= self.config.packet_flood_pps_threshold
-            and not is_dns_flood
-            and not is_syn_flood
+            and not has_specific_vector
             and not is_udp_flood
             and is_targeted_or_extreme
             and attack_type != "DISTRIBUTED_TRANSIT_TRAFFIC"
