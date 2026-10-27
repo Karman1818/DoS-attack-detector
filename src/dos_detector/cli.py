@@ -24,6 +24,10 @@ from dos_detector import __version__
 from dos_detector.alerting import ConsoleAlertSink
 from dos_detector.config import DetectionConfig
 from dos_detector.detector import RuleBasedDetector
+from dos_detector.evaluation import (
+    DatasetEvaluator,
+    generate_synthetic_benchmark_stream,
+)
 from dos_detector.features import SlidingWindowAggregator
 from dos_detector.ingestion import (
     CIC_IDS2017_CSV_MAPPING,
@@ -241,6 +245,57 @@ def cmd_csv(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_evaluate(args: argparse.Namespace) -> None:
+    """Evaluate detector against labeled datasets (e.g., CIC-IDS2017) or synthetic benchmarks."""
+    config = _build_detection_config(args)
+    detector = RuleBasedDetector(config=config)
+    evaluator = DatasetEvaluator(
+        detector=detector,
+        window_size=config.window_size_seconds,
+        step_size=args.step,
+    )
+
+    if args.demo:
+        print("[*] Generating and evaluating on synthetic multi-vector benchmark stream...")
+        stream = generate_synthetic_benchmark_stream()
+        metrics = evaluator.evaluate_stream(stream)
+        title = "Synthetic Multi-Vector Benchmark Evaluation Report"
+    elif args.csv:
+        csv_path = Path(args.csv)
+        if not csv_path.is_file():
+            print(f"[ERROR] CSV file not found: {csv_path}", file=sys.stderr)
+            sys.exit(1)
+        mapping = CIC_IDS2017_CSV_MAPPING if args.cic else None
+        print(f"[*] Evaluating detector on labeled CSV: {csv_path} ...")
+        metrics = evaluator.evaluate_csv(csv_path, mapping=mapping)
+        title = f"Dataset Benchmark Evaluation Report: {csv_path.name}"
+    elif args.pcap:
+        pcap_path = Path(args.pcap)
+        if not pcap_path.is_file():
+            print(f"[ERROR] PCAP file not found: {pcap_path}", file=sys.stderr)
+            sys.exit(1)
+        schedule_path = Path(args.schedule) if args.schedule else None
+        if schedule_path and not schedule_path.is_file():
+            print(f"[ERROR] Schedule file not found: {schedule_path}", file=sys.stderr)
+            sys.exit(1)
+        print(f"[*] Evaluating detector on PCAP: {pcap_path} ...")
+        metrics = evaluator.evaluate_pcap(pcap_path, schedule_path=schedule_path)
+        title = f"PCAP Evaluation Report: {pcap_path.name}"
+    else:
+        print(
+            "[ERROR] Specify an input source: --demo, --csv <file>, or --pcap <file>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(metrics.render_ascii_report(title=title))
+
+    if args.export_json:
+        export_path = Path(args.export_json)
+        metrics.export_json(export_path)
+        print(f"[+] Exported evaluation metrics JSON to: {export_path}")
+
+
 def _add_common_detection_args(subparser: argparse.ArgumentParser) -> None:
     """Register common detection threshold and window flags across CLI subcommands."""
     subparser.add_argument(
@@ -327,6 +382,43 @@ def main() -> None:
     )
     _add_common_detection_args(parser_csv)
     parser_csv.set_defaults(func=cmd_csv)
+
+    # Subcommand: evaluate
+    parser_eval = subparsers.add_parser(
+        "evaluate",
+        help="Evaluate detector performance against labeled datasets or synthetic benchmarks.",
+    )
+    parser_eval.add_argument(
+        "--csv",
+        help="Path to labeled CSV dataset (e.g., CIC-IDS2017).",
+    )
+    parser_eval.add_argument(
+        "--cic",
+        action="store_true",
+        help="Use CIC-IDS2017 dataset column mapping format.",
+    )
+    parser_eval.add_argument(
+        "--pcap",
+        help="Path to PCAP capture file.",
+    )
+    parser_eval.add_argument(
+        "--schedule",
+        help="Path to attack schedule JSON file defining ground truth intervals for PCAP.",
+    )
+    parser_eval.add_argument(
+        "--demo",
+        "--benchmark-demo",
+        dest="demo",
+        action="store_true",
+        help="Run evaluation on built-in multi-phase benchmark stream (Benign + SYN + HTTP + UDP floods).",
+    )
+    parser_eval.add_argument(
+        "--export-json",
+        help="Path to export evaluation metrics and confusion matrix to JSON.",
+    )
+    _add_common_detection_args(parser_eval)
+    # Default cooldown to 0.0s for evaluation so individual window classification is not suppressed
+    parser_eval.set_defaults(cooldown=0.0, func=cmd_evaluate)
 
     args = parser.parse_args()
     args.func(args)

@@ -7,6 +7,12 @@ attack patterns using configurable rules and anomaly detection.
 from dos_detector.alerting import AlertSink, InMemoryAlertSink
 from dos_detector.config import DetectionConfig
 from dos_detector.detector import BaseDetector, RuleBasedDetector
+from dos_detector.evaluation import (
+    AttackSchedule,
+    DatasetEvaluator,
+    EvaluationMetrics,
+    GroundTruthInterval,
+)
 from dos_detector.features import (
     SlidingWindowAggregator,
     compute_shannon_entropy,
@@ -31,10 +37,14 @@ __version__ = "0.1.0"
 __all__ = [
     "CIC_IDS2017_CSV_MAPPING",
     "AlertSink",
+    "AttackSchedule",
     "BaseDetector",
     "CsvFieldMapping",
+    "DatasetEvaluator",
     "DetectionAlert",
     "DetectionConfig",
+    "EvaluationMetrics",
+    "GroundTruthInterval",
     "InMemoryAlertSink",
     "PacketRecord",
     "RuleBasedDetector",

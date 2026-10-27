@@ -115,6 +115,9 @@ def compute_window_features(
         top_dst_port = most_common_port[0]
         top_dst_port_ratio = most_common_port[1] / total_packets
 
+    # Ground-truth labels for dataset evaluation
+    labels = frozenset(pkt.label for pkt in records if pkt.label is not None)
+
     return TrafficWindow(
         start_time=start_time,
         end_time=end_time,
@@ -143,6 +146,7 @@ def compute_window_features(
         top_dst_ip_ratio=top_dst_ip_ratio,
         top_dst_port=top_dst_port,
         top_dst_port_ratio=top_dst_port_ratio,
+        ground_truth_labels=labels,
     )
 
 

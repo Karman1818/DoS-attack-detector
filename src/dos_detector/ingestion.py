@@ -11,6 +11,7 @@ import re
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,9 @@ class CsvFieldMapping:
     dst_port_col: str = "dst_port"
     packet_size_col: str = "packet_size"
     tcp_flags_col: str = "tcp_flags"
+    ack_flags_col: str | None = None
+    rst_flags_col: str | None = None
+    label_col: str | None = None
 
 
 # Predefined mapping for Canadian Institute for Cybersecurity CIC-IDS2017 CSV exports
@@ -65,7 +69,38 @@ CIC_IDS2017_CSV_MAPPING = CsvFieldMapping(
     dst_port_col="Destination Port",
     packet_size_col="Total Length of Fwd Packets",
     tcp_flags_col="SYN Flag Count",
+    ack_flags_col="ACK Flag Count",
+    rst_flags_col="RST Flag Count",
+    label_col="Label",
 )
+
+
+def _parse_timestamp(ts_str: str, default_val: float) -> float:
+    """Safely parse epoch float or common datetime formats in benchmark datasets."""
+    clean_ts = ts_str.strip()
+    if not clean_ts:
+        return default_val
+    try:
+        return float(clean_ts)
+    except ValueError:
+        pass
+
+    for fmt in (
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y %I:%M:%S %p",
+        "%d/%m/%Y %I:%M %p",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+    ):
+        try:
+            return datetime.strptime(clean_ts, fmt).timestamp()
+        except ValueError:
+            continue
+
+    return default_val
 
 
 def _parse_scapy_flags(raw_flags: Any) -> frozenset[str]:
@@ -209,16 +244,23 @@ def stream_csv(
                 # Strip leading/trailing whitespace and surrounding quotes from keys and values
                 row = {k.strip(): v.strip().strip("\"'") for k, v in raw_row.items() if k}
 
-                # Timestamp parsing
+                # Timestamp parsing with epoch or datetime formats
                 ts_str = row.get(field_map.timestamp_col, "0")
-                try:
-                    timestamp = float(ts_str)
-                except ValueError:
-                    timestamp = float(row_idx)
+                timestamp = _parse_timestamp(ts_str, default_val=float(row_idx))
 
                 src_ip = row.get(field_map.src_ip_col, "")
                 dst_ip = row.get(field_map.dst_ip_col, "")
-                protocol = row.get(field_map.protocol_col, "TCP")
+
+                # Protocol normalization (handles numbers like 6/17 and names)
+                proto_raw = row.get(field_map.protocol_col, "TCP").strip()
+                if proto_raw in {"6", "6.0"}:
+                    protocol = "TCP"
+                elif proto_raw in {"17", "17.0"}:
+                    protocol = "UDP"
+                elif proto_raw in {"1", "1.0"}:
+                    protocol = "ICMP"
+                else:
+                    protocol = proto_raw.upper() if proto_raw else "TCP"
 
                 # Ports
                 sport_raw = row.get(field_map.src_port_col)
@@ -245,6 +287,23 @@ def stream_csv(
                 elif flags_raw:
                     flags.add(flags_raw.strip().upper())
 
+                # Additional flags (e.g., CIC-IDS2017 ACK/RST columns)
+                if field_map.ack_flags_col:
+                    ack_raw = row.get(field_map.ack_flags_col, "").strip()
+                    if ack_raw in {"1", "1.0", "ACK"}:
+                        flags.add("ACK")
+                if field_map.rst_flags_col:
+                    rst_raw = row.get(field_map.rst_flags_col, "").strip()
+                    if rst_raw in {"1", "1.0", "RST"}:
+                        flags.add("RST")
+
+                # Ground truth label parsing for evaluation
+                label: str | None = None
+                if field_map.label_col and field_map.label_col in row:
+                    raw_label = row[field_map.label_col].strip()
+                    if raw_label:
+                        label = raw_label
+
                 yield PacketRecord(
                     timestamp=timestamp,
                     src_ip=src_ip,
@@ -254,6 +313,7 @@ def stream_csv(
                     dst_port=dst_port,
                     packet_size=packet_size,
                     tcp_flags=frozenset(flags),
+                    label=label,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(

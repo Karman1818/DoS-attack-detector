@@ -65,6 +65,12 @@ The codebase follows the modern Python `src` layout (`src/dos_detector/`):
 - `InMemoryAlertSink`: Stores alerts for automated testing and batch verification.
 - `ConsoleAlertSink`: Formats defensive summaries safely without printing raw packet payloads.
 
+### `evaluation.py` (Benchmark & Dataset Evaluation Harness)
+- **`GroundTruthInterval` & `AttackSchedule`**: Model external attack schedules and time intervals for raw captures (e.g., CIC-IDS2017 PCAP files).
+- **`EvaluationMetrics`**: Computes standard cybersecurity detection metrics: True Positives (TP), False Positives (FP), True Negatives (TN), False Negatives (FN), Precision, Recall, Specificity, False Positive Rate (FPR), Accuracy, and F1-Score.
+- **`DatasetEvaluator`**: End-to-end evaluation runner streaming labeled CSV flows or PCAPs, tracking confusion matrices, per-attack recall breakdown, and JSON export.
+- **`generate_synthetic_benchmark_stream`**: Deterministic multi-phase benchmark generator (Benign baseline + SYN flood + HTTP WebDDoS + UDP flood) for testing and educational validation without multi-gigabyte downloads.
+
 ---
 
 ## 4. Planned Extension Points

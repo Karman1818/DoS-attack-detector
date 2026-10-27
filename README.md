@@ -83,6 +83,20 @@ uv run dos-detector pcap data/raw/capture.pcap --window 1.0 --syn-threshold 100.
 uv run dos-detector csv data/cic_ids2017/Friday-WorkingHours.csv --cic
 ```
 
+### Evaluate Detection Accuracy on Labeled Datasets (e.g., CIC-IDS2017)
+Run the quantitative benchmark evaluation harness to compute confusion matrices, Precision, Recall, Specificity, FPR, and F1-Scores:
+
+```bash
+# 1. Run evaluation on built-in multi-vector benchmark stream (Benign, SYN Flood, HTTP Flood, UDP Flood)
+uv run dos-detector evaluate --demo
+
+# 2. Evaluate against a labeled CIC-IDS2017 CSV file with JSON export
+uv run dos-detector evaluate --csv data/cic_ids2017/Wednesday-workingHours.csv --cic --export-json results.json
+
+# 3. Evaluate an offline PCAP capture against an attack ground-truth schedule
+uv run dos-detector evaluate --pcap data/cic_ids2017/Friday.pcap --schedule data/cic_ids2017/schedule.json
+```
+
 ---
 
 ## 5. Quality Commands & Testing

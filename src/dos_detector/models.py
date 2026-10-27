@@ -38,6 +38,8 @@ class PacketRecord:
     # Layer 7 (Application) metadata
     http_method: str | None = None
     http_uri: str | None = None
+    # Ground-truth label for evaluation (e.g., "BENIGN", "DoS Hulk", "DDoS")
+    label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,16 @@ class TrafficWindow:
     top_dst_ip_ratio: float = 0.0
     top_dst_port: int | None = None
     top_dst_port_ratio: float = 0.0
+    # Ground truth labels observed in this observation window
+    ground_truth_labels: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def is_attack_window(self) -> bool:
+        """Return True if any packet in this window has a non-benign attack label."""
+        return any(
+            lbl.strip().upper() not in {"BENIGN", "NORMAL", "0", "NONE", ""}
+            for lbl in self.ground_truth_labels
+        )
 
     @property
     def duration_seconds(self) -> float:

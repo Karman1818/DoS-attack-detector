@@ -22,6 +22,10 @@ This directory is reserved for local, offline traffic capture files (`.pcap`, `.
   │   └── Wednesday-workingHours.pcap_ISCX.csv
   └── README.md
   ```
+- **Evaluation Command**:
+  ```bash
+  uv run dos-detector evaluate --csv data/cic_ids2017/Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv --cic --export-json results_friday.json
+  ```
 
 ---
 
