@@ -62,11 +62,16 @@ def compute_window_features(
     ack_count = sum(1 for pkt in records if "ACK" in pkt.tcp_flags)
     rst_count = sum(1 for pkt in records if "RST" in pkt.tcp_flags)
 
+    # Protocol distribution breakdown
+    tcp_count = sum(1 for pkt in records if pkt.protocol.upper() == "TCP")
+    udp_count = sum(1 for pkt in records if pkt.protocol.upper() == "UDP")
+    icmp_count = sum(1 for pkt in records if pkt.protocol.upper() == "ICMP")
+    dns_count = sum(1 for pkt in records if (pkt.src_port == 53 or pkt.dst_port == 53))
+
     # IP distribution and entropy calculations
     ip_counter = Counter(pkt.src_ip for pkt in records if pkt.src_ip)
     ip_packets_total = sum(ip_counter.values())
     unique_src_ips = len(ip_counter)
-    unique_dst_ports = len({pkt.dst_port for pkt in records if pkt.dst_port is not None})
 
     top_ip: str | None = None
     top_ip_ratio = 0.0
@@ -79,6 +84,25 @@ def compute_window_features(
         counts=list(ip_counter.values()),
         total=ip_packets_total,
     )
+
+    # Destination target metrics (for victim concentration and DDoS distinction)
+    dst_ip_counter = Counter(pkt.dst_ip for pkt in records if pkt.dst_ip)
+    unique_dst_ips = len(dst_ip_counter)
+    top_dst_ip: str | None = None
+    top_dst_ip_ratio = 0.0
+    if dst_ip_counter and total_packets > 0:
+        most_common_dst = dst_ip_counter.most_common(1)[0]
+        top_dst_ip = most_common_dst[0]
+        top_dst_ip_ratio = most_common_dst[1] / total_packets
+
+    dst_port_counter = Counter(pkt.dst_port for pkt in records if pkt.dst_port is not None)
+    unique_dst_ports = len(dst_port_counter)
+    top_dst_port: int | None = None
+    top_dst_port_ratio = 0.0
+    if dst_port_counter and total_packets > 0:
+        most_common_port = dst_port_counter.most_common(1)[0]
+        top_dst_port = most_common_port[0]
+        top_dst_port_ratio = most_common_port[1] / total_packets
 
     return TrafficWindow(
         start_time=start_time,
@@ -96,6 +120,15 @@ def compute_window_features(
         normalized_ip_entropy=norm_entropy,
         top_source_ip=top_ip,
         top_source_ip_ratio=top_ip_ratio,
+        tcp_count=tcp_count,
+        udp_count=udp_count,
+        icmp_count=icmp_count,
+        dns_count=dns_count,
+        unique_dst_ips=unique_dst_ips,
+        top_dst_ip=top_dst_ip,
+        top_dst_ip_ratio=top_dst_ip_ratio,
+        top_dst_port=top_dst_port,
+        top_dst_port_ratio=top_dst_port_ratio,
     )
 
 

@@ -56,6 +56,17 @@ class TrafficWindow:
     normalized_ip_entropy: float = 0.0
     top_source_ip: str | None = None
     top_source_ip_ratio: float = 0.0
+    # Protocol layer metrics
+    tcp_count: int = 0
+    udp_count: int = 0
+    icmp_count: int = 0
+    dns_count: int = 0
+    # Destination target metrics (for DDoS target concentration analysis)
+    unique_dst_ips: int = 0
+    top_dst_ip: str | None = None
+    top_dst_ip_ratio: float = 0.0
+    top_dst_port: int | None = None
+    top_dst_port_ratio: float = 0.0
 
     @property
     def duration_seconds(self) -> float:
@@ -74,13 +85,43 @@ class TrafficWindow:
             return float(self.syn_count) if self.syn_count > 0 else 0.0
         return self.syn_count / self.ack_count
 
+    @property
+    def dns_pps(self) -> float:
+        """Calculate DNS packets per second within the window."""
+        return self.dns_count / self.duration_seconds if self.duration_seconds > 0 else 0.0
+
+    @property
+    def udp_pps(self) -> float:
+        """Calculate UDP packets per second within the window."""
+        return self.udp_count / self.duration_seconds if self.duration_seconds > 0 else 0.0
+
+    @property
+    def tcp_pps(self) -> float:
+        """Calculate TCP packets per second within the window."""
+        return self.tcp_count / self.duration_seconds if self.duration_seconds > 0 else 0.0
+
+    @property
+    def dns_ratio(self) -> float:
+        """Calculate the proportion of DNS packets in the window."""
+        return self.dns_count / self.total_packets if self.total_packets > 0 else 0.0
+
+    @property
+    def udp_ratio(self) -> float:
+        """Calculate the proportion of UDP packets in the window."""
+        return self.udp_count / self.total_packets if self.total_packets > 0 else 0.0
+
+    @property
+    def tcp_ratio(self) -> float:
+        """Calculate the proportion of TCP packets in the window."""
+        return self.tcp_count / self.total_packets if self.total_packets > 0 else 0.0
+
 
 @dataclass(frozen=True, slots=True)
 class DetectionAlert:
     """Structured notification describing an anomalous or suspicious traffic pattern.
 
-    Alerts are defensive and explanatory, highlighting suspected behavior and
-    potential false-positive factors rather than claiming absolute certainty.
+    Alerts are defensive and explanatory, highlighting suspected behavior,
+    DoS vs DDoS distribution probabilities, and potential false-positive factors.
     """
 
     timestamp: float
@@ -90,4 +131,15 @@ class DetectionAlert:
     confidence: float
     attack_type: str = "UNKNOWN"
     distribution_confidence: float = 0.0
+    dos_probability: float = 0.0
+    ddos_probability: float = 0.0
     metrics_snapshot: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def distribution_summary(self) -> str:
+        """Human-readable summary of DoS vs DDoS distribution probabilities."""
+        ddos_pct = self.ddos_probability * 100.0
+        dos_pct = self.dos_probability * 100.0
+        if ddos_pct >= 50.0:
+            return f"DDoS ({ddos_pct:.0f}%) vs DoS ({dos_pct:.0f}%)"
+        return f"DoS ({dos_pct:.0f}%) vs DDoS ({ddos_pct:.0f}%)"

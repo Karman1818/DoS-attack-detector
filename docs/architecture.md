@@ -42,23 +42,23 @@ The codebase follows the modern Python `src` layout (`src/dos_detector/`):
 
 ### `models.py` (Domain Core)
 - **`PacketRecord`**: Normalized representation of a single network packet (timestamp, IPs, protocol, ports, size, TCP flags). Shields the rest of the application from parser quirks.
-- **`TrafficWindow`**: Aggregated metrics computed over an observation window (packet rates, byte rates, SYN/ACK ratios, unique IPs, Shannon entropy, top source IP metrics).
+- **`TrafficWindow`**: Aggregated metrics computed over an observation window (packet rates, byte rates, SYN/ACK ratios, protocol breakdowns [TCP/UDP/ICMP/DNS], victim target concentration ratios [top destination IP/port], unique IPs, Shannon entropy, top source IP metrics).
 - **`Severity`**: Standardized enum (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
 - **`DetectionAlert`**: Encapsulates a detected anomaly with metadata, confidence score, attack type (`SINGLE_SOURCE_DOS`, `COORDINATED_DOS`, `DISTRIBUTED_DOS`), and supporting metrics snapshot.
 
 ### `config.py` (Configurable Parameters)
-- Defines `DetectionConfig`. Externalizes threshold configuration (window size, SYN rates, volumetric bps thresholds).
+- Defines `DetectionConfig`. Externalizes threshold configuration (window size, step size, SYN rates, volumetric bps, packet flood pps, DNS flood pps, target concentration ratio, `min_consecutive_windows` persistence, and `alert_cooldown_seconds`).
 
 ### `features.py` (Feature Engineering & Windowing)
-- **`SlidingWindowAggregator`**: FIFO queue (`deque`) generating overlapping sliding windows from an input packet stream with configurable `window_size` and `step_size`.
+- **`SlidingWindowAggregator`**: FIFO queue (`deque`) generating overlapping sliding windows from an input packet stream with configurable `window_size` and `step_size`. Handles chronological fast-paths, out-of-order jitter with `bisect.insort`, and large time gap jump optimizations.
 - **`stream_sliding_windows`**: Generator function connecting packet iterables to sliding windows.
 - **`compute_shannon_entropy`**: Shannon entropy and normalized entropy (0.0 to 1.0) calculation on IP distributions.
-- **`compute_window_features`**: Pure function calculating rates, flag distributions, and entropy metrics for a batch of records.
+- **`compute_window_features`**: Pure function calculating rates, flag distributions, protocol breakdowns, victim target concentration, and entropy metrics for a batch of records.
 
 ### `detector.py` (Detection Logic)
 - Implements `BaseDetector` (Abstract Base Class).
-- **`classify_attack_distribution`**: Classifies whether an anomaly is single-source DoS, coordinated DoS, or distributed DDoS using entropy and source ratios.
-- **`RuleBasedDetector`**: Evaluates deterministic heuristics against a `TrafficWindow` (SYN flood, volumetric flood, packet flood).
+- **`classify_attack_distribution`**: Classifies whether an anomaly is single-source DoS, coordinated DoS, distributed DDoS, or benign multi-target transit traffic (`DISTRIBUTED_TRANSIT_TRAFFIC`) by coupling Shannon entropy with victim target concentration.
+- **`RuleBasedDetector`**: Evaluates deterministic heuristics against a `TrafficWindow` (DNS amplification/flood, UDP flood, TCP SYN flood, volumetric flood, and subsumed packet flood) with sliding window persistence (`min_consecutive_windows`) and cooldown deduplication.
 
 ### `alerting.py` (Output Abstraction)
 - Defines `AlertSink` protocol.

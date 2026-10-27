@@ -148,3 +148,62 @@ def test_sliding_window_aggregator_out_of_order_bisect() -> None:
     # Window 1: [0.5, 1.5] -> Both 0.1 and 0.3 should be properly evicted by bisect sorting!
     # Contains: 0.5, 0.8
     assert windows[1].total_packets == 2
+
+
+@pytest.mark.unit
+def test_protocol_and_target_features_extraction() -> None:
+    """Validate extraction of TCP, UDP, DNS and victim destination target metrics."""
+    packets = [
+        # 3 DNS packets (UDP to port 53)
+        PacketRecord(
+            timestamp=0.1,
+            src_ip="172.16.0.5",
+            dst_ip="192.168.1.1",
+            protocol="UDP",
+            src_port=54321,
+            dst_port=53,
+            packet_size=120,
+        ),
+        PacketRecord(
+            timestamp=0.2,
+            src_ip="172.16.0.5",
+            dst_ip="192.168.1.1",
+            protocol="UDP",
+            src_port=54322,
+            dst_port=53,
+            packet_size=120,
+        ),
+        PacketRecord(
+            timestamp=0.3,
+            src_ip="172.16.0.5",
+            dst_ip="192.168.1.1",
+            protocol="UDP",
+            src_port=54323,
+            dst_port=53,
+            packet_size=120,
+        ),
+        # 1 HTTP packet (TCP to port 80)
+        PacketRecord(
+            timestamp=0.4,
+            src_ip="10.0.0.1",
+            dst_ip="192.168.1.2",
+            protocol="TCP",
+            src_port=60000,
+            dst_port=80,
+            packet_size=60,
+            tcp_flags=frozenset({"SYN"}),
+        ),
+    ]
+
+    window = compute_window_features(records=packets, start_time=0.0, end_time=1.0)
+
+    assert window.total_packets == 4
+    assert window.udp_count == 3
+    assert window.tcp_count == 1
+    assert window.dns_count == 3
+    assert window.dns_ratio == pytest.approx(0.75)
+    assert window.udp_ratio == pytest.approx(0.75)
+    assert window.top_dst_ip == "192.168.1.1"
+    assert window.top_dst_ip_ratio == pytest.approx(0.75)
+    assert window.top_dst_port == 53
+    assert window.top_dst_port_ratio == pytest.approx(0.75)

@@ -101,6 +101,18 @@ def _generate_synthetic_demo_pcap(target_path: Path) -> int:
     return len(packets)
 
 
+def _build_detection_config(args: argparse.Namespace) -> DetectionConfig:
+    """Construct DetectionConfig from parsed CLI arguments."""
+    return DetectionConfig(
+        window_size_seconds=args.window,
+        syn_flood_pps_threshold=args.syn_threshold,
+        packet_flood_pps_threshold=args.pps_threshold,
+        dns_flood_pps_threshold=args.dns_threshold,
+        min_consecutive_windows=args.min_consecutive,
+        alert_cooldown_seconds=args.cooldown,
+    )
+
+
 def _process_packet_stream(
     packet_stream: Iterable[PacketRecord],
     config: DetectionConfig,
@@ -115,13 +127,20 @@ def _process_packet_stream(
         step_size=step_size,
     )
 
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 75)
     print(f"[*] Analyzing Network Traffic Source: {source_desc}")
     print(
-        f"[*] Window Size: {config.window_size_seconds}s | Slide Step: {step_size}s | "
-        f"SYN Threshold: {config.syn_flood_pps_threshold} pps"
+        f"[*] Window: {config.window_size_seconds}s (step: {step_size}s) | "
+        f"Min Consecutive Windows: {config.min_consecutive_windows} | "
+        f"Alert Cooldown: {config.alert_cooldown_seconds}s"
     )
-    print("=" * 70 + "\n")
+    print(
+        f"[*] Thresholds: Packet Flood >= {config.packet_flood_pps_threshold:.0f} pps | "
+        f"SYN Flood >= {config.syn_flood_pps_threshold:.0f} pps (ratio >= {config.syn_ack_ratio_threshold:.1f}) | "
+        f"DNS Flood >= {config.dns_flood_pps_threshold:.0f} pps | "
+        f"Volumetric >= {config.volumetric_bps_threshold / 1_000_000:.1f} MB/s"
+    )
+    print("=" * 75 + "\n")
 
     total_packets_inspected = 0
     total_alerts_emitted = 0
@@ -138,13 +157,13 @@ def _process_packet_stream(
             total_alerts_emitted += 1
             sink.emit(alert)
 
-    print("\n" + "-" * 70)
+    print("\n" + "-" * 75)
     print(f"[+] Analysis Complete: {total_packets_inspected} packets evaluated.")
     if total_alerts_emitted > 0:
         print(f"[!] Detections: {total_alerts_emitted} suspicious event(s) flagged.")
     else:
         print("[+] Detections: No anomalies found. Traffic profile is balanced.")
-    print("-" * 70 + "\n")
+    print("-" * 75 + "\n")
 
 
 def cmd_demo(args: argparse.Namespace) -> None:
@@ -154,10 +173,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
     count = _generate_synthetic_demo_pcap(sample_file)
     print(f"[+] Generated {count} synthetic packets (normal web browsing + simulated SYN flood).")
 
-    config = DetectionConfig(
-        window_size_seconds=args.window,
-        syn_flood_pps_threshold=args.syn_threshold,
-    )
+    config = _build_detection_config(args)
     _process_packet_stream(
         stream_pcap(sample_file),
         config,
@@ -173,10 +189,7 @@ def cmd_pcap(args: argparse.Namespace) -> None:
         print(f"[ERROR] File not found: {pcap_path}", file=sys.stderr)
         sys.exit(1)
 
-    config = DetectionConfig(
-        window_size_seconds=args.window,
-        syn_flood_pps_threshold=args.syn_threshold,
-    )
+    config = _build_detection_config(args)
     _process_packet_stream(
         stream_pcap(pcap_path),
         config,
@@ -192,16 +205,59 @@ def cmd_csv(args: argparse.Namespace) -> None:
         print(f"[ERROR] File not found: {csv_path}", file=sys.stderr)
         sys.exit(1)
 
-    config = DetectionConfig(
-        window_size_seconds=args.window,
-        syn_flood_pps_threshold=args.syn_threshold,
-    )
+    config = _build_detection_config(args)
     mapping = CIC_IDS2017_CSV_MAPPING if args.cic else None
     _process_packet_stream(
         stream_csv(csv_path, mapping=mapping),
         config,
         str(csv_path),
         step_size=args.step,
+    )
+
+
+def _add_common_detection_args(subparser: argparse.ArgumentParser) -> None:
+    """Register common detection threshold and window flags across CLI subcommands."""
+    subparser.add_argument(
+        "--window",
+        type=float,
+        default=1.0,
+        help="Time window size in seconds (default: 1.0)",
+    )
+    subparser.add_argument(
+        "--step",
+        type=float,
+        default=0.2,
+        help="Sliding step size in seconds (default: 0.2)",
+    )
+    subparser.add_argument(
+        "--syn-threshold",
+        type=float,
+        default=100.0,
+        help="SYN packets per second threshold (default: 100.0)",
+    )
+    subparser.add_argument(
+        "--pps-threshold",
+        type=float,
+        default=1000.0,
+        help="General packet flood threshold in pps (default: 1000.0)",
+    )
+    subparser.add_argument(
+        "--dns-threshold",
+        type=float,
+        default=500.0,
+        help="DNS packet flood threshold in pps (default: 500.0)",
+    )
+    subparser.add_argument(
+        "--min-consecutive",
+        type=int,
+        default=1,
+        help="Minimum consecutive violating windows before alerting (default: 1)",
+    )
+    subparser.add_argument(
+        "--cooldown",
+        type=float,
+        default=1.0,
+        help="Alert cooldown in seconds to suppress duplicate alerts (default: 1.0)",
     )
 
 
@@ -220,47 +276,13 @@ def main() -> None:
         "demo",
         help="Generate synthetic network traffic and demonstrate live detection.",
     )
-    parser_demo.add_argument(
-        "--window",
-        type=float,
-        default=1.0,
-        help="Time window size in seconds (default: 1.0)",
-    )
-    parser_demo.add_argument(
-        "--syn-threshold",
-        type=float,
-        default=100.0,
-        help="SYN packets per second threshold (default: 100.0)",
-    )
-    parser_demo.add_argument(
-        "--step",
-        type=float,
-        default=0.2,
-        help="Sliding step size in seconds (default: 0.2)",
-    )
+    _add_common_detection_args(parser_demo)
     parser_demo.set_defaults(func=cmd_demo)
 
     # Subcommand: pcap
     parser_pcap = subparsers.add_parser("pcap", help="Analyze an offline PCAP/PCAPNG file.")
     parser_pcap.add_argument("file", help="Path to PCAP capture file.")
-    parser_pcap.add_argument(
-        "--window",
-        type=float,
-        default=1.0,
-        help="Time window size in seconds (default: 1.0)",
-    )
-    parser_pcap.add_argument(
-        "--step",
-        type=float,
-        default=0.2,
-        help="Sliding step size in seconds (default: 0.2)",
-    )
-    parser_pcap.add_argument(
-        "--syn-threshold",
-        type=float,
-        default=100.0,
-        help="SYN packets per second threshold (default: 100.0)",
-    )
+    _add_common_detection_args(parser_pcap)
     parser_pcap.set_defaults(func=cmd_pcap)
 
     # Subcommand: csv
@@ -271,24 +293,7 @@ def main() -> None:
         action="store_true",
         help="Use CIC-IDS2017 dataset column mapping format.",
     )
-    parser_csv.add_argument(
-        "--window",
-        type=float,
-        default=1.0,
-        help="Time window size in seconds (default: 1.0)",
-    )
-    parser_csv.add_argument(
-        "--step",
-        type=float,
-        default=0.2,
-        help="Sliding step size in seconds (default: 0.2)",
-    )
-    parser_csv.add_argument(
-        "--syn-threshold",
-        type=float,
-        default=100.0,
-        help="SYN packets per second threshold (default: 100.0)",
-    )
+    _add_common_detection_args(parser_csv)
     parser_csv.set_defaults(func=cmd_csv)
 
     args = parser.parse_args()

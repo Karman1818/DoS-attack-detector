@@ -118,7 +118,7 @@ def test_coordinated_dos_classification() -> None:
     attack_type, conf, note = classify_attack_distribution(window)
     assert attack_type == "COORDINATED_DOS"
     assert conf >= 0.7
-    assert "Coordinated DoS suspected" in note
+    assert "Coordinated DoS" in note
 
 
 @pytest.mark.unit
@@ -142,3 +142,195 @@ def test_volumetric_flood_generates_alert(default_config: DetectionConfig) -> No
     alert_rules = [a.rule_name for a in alerts]
     assert "VOLUMETRIC_FLOOD_SUSPECTED" in alert_rules
     assert "PACKET_RATE_FLOOD_SUSPECTED" in alert_rules
+
+
+@pytest.mark.unit
+def test_dns_flood_detection_from_single_source() -> None:
+    """Validate detection of high-rate DNS / UDP amplification or flood from single IP."""
+    config = DetectionConfig(
+        dns_flood_pps_threshold=500.0,
+        min_consecutive_windows=1,
+    )
+    detector = RuleBasedDetector(config=config)
+
+    # Simulating CIC-DDoS-2019-DNS: 172.16.0.5 flooding DNS requests/responses
+    window = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=5000,
+        total_bytes=2_500_000,
+        packet_rate=5000.0,
+        byte_rate=2_500_000.0,
+        syn_count=0,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        top_source_ip="172.16.0.5",
+        top_source_ip_ratio=1.0,
+        udp_count=5000,
+        dns_count=5000,
+        top_dst_ip="192.168.50.1",
+        top_dst_ip_ratio=1.0,
+        top_dst_port=53,
+        top_dst_port_ratio=1.0,
+    )
+
+    alerts = detector.evaluate_window(window)
+    assert len(alerts) >= 1
+    dns_alert = next((a for a in alerts if a.rule_name == "DNS_FLOOD_SUSPECTED"), None)
+    assert dns_alert is not None
+    # In CIC-DDoS-2019, DNS amplification is classified as a DRDoS (Distributed Reflection) vector
+    assert "DISTRIBUTED_DOS" in dns_alert.attack_type
+    assert dns_alert.ddos_probability >= 0.85
+    assert dns_alert.dos_probability <= 0.15
+    assert "DDoS" in dns_alert.distribution_summary
+    assert dns_alert.confidence >= 0.85
+    assert dns_alert.metrics_snapshot["dns_pps"] == 5000.0
+
+
+@pytest.mark.unit
+def test_micro_burst_filtered_by_consecutive_windows() -> None:
+    """Ensure a transient single-window burst does not trigger an alert when min_consecutive=2."""
+    config = DetectionConfig(
+        packet_flood_pps_threshold=1000.0,
+        min_consecutive_windows=2,
+    )
+    detector = RuleBasedDetector(config=config)
+
+    # Window 1: Isolated micro-burst (e.g., 1287 pps)
+    burst_window_1 = TrafficWindow(
+        start_time=10.0,
+        end_time=11.0,
+        total_packets=1287,
+        total_bytes=800_000,
+        packet_rate=1287.0,
+        byte_rate=800_000.0,
+        syn_count=0,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        top_dst_ip_ratio=1.0,
+    )
+    alerts_1 = detector.evaluate_window(burst_window_1)
+    # First window should be suppressed as a potential transient burst
+    assert len(alerts_1) == 0
+
+    # Window 2: Sustained flood continuing
+    burst_window_2 = TrafficWindow(
+        start_time=10.2,
+        end_time=11.2,
+        total_packets=1300,
+        total_bytes=810_000,
+        packet_rate=1300.0,
+        byte_rate=810_000.0,
+        syn_count=0,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        top_dst_ip_ratio=1.0,
+    )
+    alerts_2 = detector.evaluate_window(burst_window_2)
+    # Second window confirms sustained attack -> alert emitted
+    assert len(alerts_2) == 1
+    assert alerts_2[0].rule_name == "PACKET_RATE_FLOOD_SUSPECTED"
+
+
+@pytest.mark.unit
+def test_alert_cooldown_suppresses_duplicate_sliding_alerts() -> None:
+    """Ensure overlapping sliding windows do not spam duplicate alerts within cooldown window."""
+    config = DetectionConfig(
+        packet_flood_pps_threshold=1000.0,
+        min_consecutive_windows=1,
+        alert_cooldown_seconds=1.0,
+    )
+    detector = RuleBasedDetector(config=config)
+
+    window_1 = TrafficWindow(
+        start_time=1.0,
+        end_time=2.0,
+        total_packets=2000,
+        total_bytes=1_000_000,
+        packet_rate=2000.0,
+        byte_rate=1_000_000.0,
+        syn_count=0,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        top_dst_ip_ratio=1.0,
+    )
+    alerts_1 = detector.evaluate_window(window_1)
+    assert len(alerts_1) == 1
+
+    # Window 2: 0.2s later (overlapping window within 1.0s cooldown)
+    window_2 = TrafficWindow(
+        start_time=1.2,
+        end_time=2.2,
+        total_packets=2100,
+        total_bytes=1_050_000,
+        packet_rate=2100.0,
+        byte_rate=1_050_000.0,
+        syn_count=0,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        top_dst_ip_ratio=1.0,
+    )
+    alerts_2 = detector.evaluate_window(window_2)
+    assert len(alerts_2) == 0  # Suppressed by cooldown!
+
+    # Window 3: 1.5s later (past 1.0s cooldown)
+    window_3 = TrafficWindow(
+        start_time=2.5,
+        end_time=3.5,
+        total_packets=2050,
+        total_bytes=1_020_000,
+        packet_rate=2050.0,
+        byte_rate=1_020_000.0,
+        syn_count=0,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        top_dst_ip_ratio=1.0,
+    )
+    alerts_3 = detector.evaluate_window(window_3)
+    assert len(alerts_3) == 1
+
+
+@pytest.mark.unit
+def test_multi_target_benign_transit_traffic_not_flagged_as_ddos() -> None:
+    """Verify that multi-target distributed browsing traffic is not falsely marked as DDoS."""
+    window = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=1200,
+        total_bytes=600_000,
+        packet_rate=1200.0,
+        byte_rate=600_000.0,
+        syn_count=20,
+        ack_count=100,
+        rst_count=0,
+        unique_src_ips=17,
+        unique_dst_ips=15,  # Communicating with 15 different servers
+        unique_dst_ports=8,
+        top_dst_ip="93.184.216.34",
+        top_dst_ip_ratio=0.15,  # No concentrated victim target!
+        top_dst_port=443,
+        top_dst_port_ratio=0.30,
+        normalized_ip_entropy=0.88,
+    )
+
+    attack_type, conf, note = classify_attack_distribution(window)
+    assert attack_type == "DISTRIBUTED_TRANSIT_TRAFFIC"
+    assert conf < 0.50
+    assert "low threat confidence" in note
+
+    # Detector should not raise PACKET_RATE_FLOOD_SUSPECTED for distributed transit traffic
+    detector = RuleBasedDetector()
+    alerts = detector.evaluate_window(window)
+    assert len(alerts) == 0

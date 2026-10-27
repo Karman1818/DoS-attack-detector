@@ -17,6 +17,7 @@ class DetectionConfig:
     # SYN flood heuristic thresholds
     syn_flood_pps_threshold: float = 100.0
     syn_ack_ratio_threshold: float = 3.0
+    syn_ratio_in_tcp_threshold: float = 0.50
 
     # Volumetric traffic threshold (bytes per second)
     volumetric_bps_threshold: float = 10_000_000.0  # ~10 MB/s
@@ -24,8 +25,23 @@ class DetectionConfig:
     # Packet flood threshold (packets per second)
     packet_flood_pps_threshold: float = 1_000.0
 
+    # Protocol-specific flood thresholds (DNS and UDP)
+    dns_flood_pps_threshold: float = 500.0
+    dns_ratio_threshold: float = 0.50
+    udp_flood_pps_threshold: float = 1_000.0
+    udp_ratio_threshold: float = 0.70
+
+    # Minimum target concentration ratio to qualify high-volume traffic as targeted attack
+    target_concentration_threshold: float = 0.60
+
     # Minimum number of packets in a window before ratio rules trigger (reduces noise)
     min_packets_for_ratio_eval: int = 10
+
+    # Sliding-window alert persistence and suppression
+    # Minimum consecutive windows exceeding threshold before raising an alert (filters micro-bursts)
+    min_consecutive_windows: int = 1
+    # Minimum time between duplicate alerts for the same rule (avoids alert storms in sliding windows)
+    alert_cooldown_seconds: float = 1.0
 
     def validate(self) -> None:
         """Validate configuration parameters.
@@ -41,4 +57,19 @@ class DetectionConfig:
             raise ValueError(msg)
         if self.volumetric_bps_threshold <= 0:
             msg = f"volumetric_bps_threshold must be positive, got {self.volumetric_bps_threshold}"
+            raise ValueError(msg)
+        if self.packet_flood_pps_threshold <= 0:
+            msg = f"packet_flood_pps_threshold must be positive, got {self.packet_flood_pps_threshold}"
+            raise ValueError(msg)
+        if self.dns_flood_pps_threshold <= 0:
+            msg = f"dns_flood_pps_threshold must be positive, got {self.dns_flood_pps_threshold}"
+            raise ValueError(msg)
+        if self.udp_flood_pps_threshold <= 0:
+            msg = f"udp_flood_pps_threshold must be positive, got {self.udp_flood_pps_threshold}"
+            raise ValueError(msg)
+        if self.min_consecutive_windows < 1:
+            msg = f"min_consecutive_windows must be >= 1, got {self.min_consecutive_windows}"
+            raise ValueError(msg)
+        if self.alert_cooldown_seconds < 0:
+            msg = f"alert_cooldown_seconds must be non-negative, got {self.alert_cooldown_seconds}"
             raise ValueError(msg)
