@@ -176,3 +176,38 @@ def test_cli_serve_subparser(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     main()
     assert mock_run_called is True
+
+
+@pytest.mark.unit
+def test_upload_custom_model_and_reset(test_client: TestClient, tmp_path: Path) -> None:
+    """Verify uploading a custom trained .joblib model and resetting to baseline."""
+    import joblib
+    from sklearn.ensemble import IsolationForest
+
+    model = IsolationForest(n_estimators=10, random_state=42)
+    X_dummy = [[1.0] * 10, [2.0] * 10]
+    model.fit(X_dummy)
+
+    model_file = tmp_path / "custom_test_model.joblib"
+    joblib.dump(model, str(model_file))
+
+    with model_file.open("rb") as f:
+        res = test_client.post(
+            "/api/model/upload",
+            files={"file": ("custom_test_model.joblib", f, "application/octet-stream")},
+        )
+    assert res.status_code == 200
+    data = res.json()
+    assert "Custom model (custom_test_model.joblib)" in data["model_description"]
+
+    # Invalid extension
+    res_bad_ext = test_client.post(
+        "/api/model/upload",
+        files={"file": ("bad_model.pkl", b"invalid", "application/octet-stream")},
+    )
+    assert res_bad_ext.status_code == 400
+
+    # Reset back to default
+    res_reset = test_client.post("/api/model/reset")
+    assert res_reset.status_code == 200
+    assert "Built-in reference baseline" in res_reset.json()["model_description"]

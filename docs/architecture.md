@@ -84,6 +84,7 @@ The codebase follows the modern Python `src` layout (`src/dos_detector/`):
   - `GET /`: Serves the embedded HTML5/CSS/JavaScript SOC dashboard.
   - `GET /api/health`: Provides detector health, active detection mode, telemetry counters, and version info.
   - `GET /api/config` & `POST /api/config`: Dynamic runtime inspection and reconfiguration of detection thresholds and detector modes (`hybrid`, `base`, `ml`).
+  - `POST /api/model/upload` & `POST /api/model/reset`: Allows uploading custom serialized `.joblib` Isolation Forest models and dynamically hot-swapping the active engine, or resetting to the built-in reference baseline.
   - `POST /api/analyze/demo`: Evaluates synthetic multi-phase educational traffic and returns timeline series data with triggered alert tags.
   - `POST /api/analyze/upload`: Safely ingests uploaded offline capture files (`.pcap`, `.pcapng`, `.csv`), buffers them into temporary files, evaluates windows, and unlinks files immediately upon completion.
   - `GET /api/alerts` & `POST /api/alerts/clear`: Fetches historical alerts and resets state.

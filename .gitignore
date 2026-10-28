@@ -27,6 +27,8 @@ htmlcov/
 # Datasets and packet captures (NEVER COMMIT PACKET CAPTURES OR RAW DATA)
 data/*
 !data/README.md
+models/*
+!models/README.md
 *.pcap
 *.pcapng
 *.cap

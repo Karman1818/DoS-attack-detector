@@ -115,6 +115,7 @@ class ServerState:
     detector: BaseDetector = field(init=False)
     mode_label: str = "hybrid"
     model_desc: str = "Built-in reference baseline (Isolation Forest)"
+    custom_model_path: Path | None = None
     alerts_history: list[dict[str, Any]] = field(default_factory=list)
     total_packets_evaluated: int = 0
     total_windows_evaluated: int = 0
@@ -124,6 +125,9 @@ class ServerState:
 
     def rebuild_detector(self, model_path: str | Path | None = None) -> None:
         """Reconstruct detector instances based on current config and model settings."""
+        if model_path is not None:
+            self.custom_model_path = Path(model_path)
+
         mode = self.config.detector_mode.lower()
         if mode == "rule":
             mode = "base"
@@ -131,7 +135,7 @@ class ServerState:
 
         ml_model = None
         if mode in ("ml", "hybrid"):
-            target_path = model_path or self.config.ml_model_path
+            target_path = self.custom_model_path or self.config.ml_model_path
             if target_path:
                 ml_model = load_model(target_path)
                 self.model_desc = f"Custom model ({Path(target_path).name})"
@@ -315,13 +319,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <h1>DoS Attack Detector <span id="engineBadge" class="badge badge-hybrid">HYBRID</span></h1>
       <p id="engineDesc">Active Model: Built-in reference baseline (Isolation Forest)</p>
     </div>
-    <div style="display: flex; gap: 12px; align-items: center;">
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
       <label style="font-size: 13px; color: var(--text-muted);">Engine Mode:</label>
       <select id="modeSelect" class="mode-select" onchange="switchMode(this.value)">
         <option value="hybrid" selected>Hybrid (Rules + ML)</option>
         <option value="base">Base (Rules Only)</option>
         <option value="ml">ML (Isolation Forest)</option>
       </select>
+      <input type="file" id="customModelInput" style="display: none;" accept=".joblib" onchange="if(this.files[0]) uploadCustomModel(this.files[0]); this.value='';">
+      <button class="btn" onclick="document.getElementById('customModelInput').click()" title="Load custom trained Isolation Forest (.joblib) model">📁 Custom Model</button>
+      <button class="btn" id="btnResetModel" onclick="resetDefaultModel()" style="display: none;" title="Revert to built-in reference baseline">🔄 Default Model</button>
       <button class="btn" onclick="clearAlerts()">Clear</button>
     </div>
   </div>
@@ -438,6 +445,53 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('engineBadge').innerText = data.detector_mode.toUpperCase();
       document.getElementById('engineDesc').innerText = 'Active Model: ' + data.model_description;
       document.getElementById('modeSelect').value = data.detector_mode;
+      const isCustom = data.model_description && data.model_description.includes('Custom');
+      document.getElementById('btnResetModel').style.display = isCustom ? 'inline-flex' : 'none';
+    }
+
+    async function uploadCustomModel(file) {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.joblib')) {
+        alert('Please select a valid serialized .joblib model file.');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/model/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          alert('Failed to load custom model: ' + (errData.detail || 'Validation error'));
+          return;
+        }
+
+        const data = await res.json();
+        document.getElementById('engineDesc').innerText = 'Active Model: ' + data.model_description;
+        document.getElementById('btnResetModel').style.display = 'inline-flex';
+        alert('Custom model activated successfully:\n' + data.model_description);
+      } catch (err) {
+        alert('Network error while uploading model: ' + err.message);
+      }
+    }
+
+    async function resetDefaultModel() {
+      try {
+        const res = await fetch('/api/model/reset', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById('engineDesc').innerText = 'Active Model: ' + data.model_description;
+          document.getElementById('btnResetModel').style.display = 'none';
+          alert('Reverted to built-in reference baseline model.');
+        }
+      } catch (err) {
+        alert('Failed to reset model: ' + err.message);
+      }
     }
 
     async function switchMode(newMode) {
@@ -692,6 +746,50 @@ def create_app(
             ) from exc
 
         state.config = new_config
+        state.rebuild_detector()
+        return health_check()
+
+    @app.post("/api/model/upload", response_model=HealthResponse)
+    def upload_model(
+        file: Annotated[
+            UploadFile,
+            File(description="Serialized Isolation Forest .joblib model file"),
+        ],
+    ) -> HealthResponse:
+        """Safely upload and activate a custom Isolation Forest .joblib model."""
+        suffix = Path(file.filename or "model.joblib").suffix.lower()
+        if suffix != ".joblib":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported model extension '{suffix}'. Expected .joblib",
+            )
+
+        models_dir = Path("models")
+        models_dir.mkdir(parents=True, exist_ok=True)
+        safe_filename = Path(file.filename or "custom_model.joblib").name
+        dest_path = models_dir / safe_filename
+
+        with dest_path.open("wb") as buffer:
+            file.file.seek(0)
+            shutil.copyfileobj(file.file, buffer)
+
+        try:
+            load_model(dest_path)
+        except Exception as exc:
+            dest_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid model artifact: {exc}",
+            ) from exc
+
+        state.custom_model_path = dest_path
+        state.rebuild_detector(model_path=dest_path)
+        return health_check()
+
+    @app.post("/api/model/reset", response_model=HealthResponse)
+    def reset_model() -> HealthResponse:
+        """Revert active detector model to the built-in reference baseline."""
+        state.custom_model_path = None
         state.rebuild_detector()
         return health_check()
 
