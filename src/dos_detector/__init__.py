@@ -6,7 +6,12 @@ attack patterns using configurable rules and anomaly detection.
 
 from dos_detector.alerting import AlertSink, InMemoryAlertSink
 from dos_detector.config import DetectionConfig
-from dos_detector.detector import BaseDetector, RuleBasedDetector
+from dos_detector.detector import (
+    BaseDetector,
+    HybridDetector,
+    IsolationForestDetector,
+    RuleBasedDetector,
+)
 from dos_detector.evaluation import (
     AttackSchedule,
     DatasetEvaluator,
@@ -55,7 +60,9 @@ __all__ = [
     "EvaluationMetrics",
     "FEATURE_NAMES",
     "GroundTruthInterval",
+    "HybridDetector",
     "InMemoryAlertSink",
+    "IsolationForestDetector",
     "PacketRecord",
     "RuleBasedDetector",
     "Severity",

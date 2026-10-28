@@ -3,7 +3,12 @@
 import pytest
 
 from dos_detector.config import DetectionConfig
-from dos_detector.detector import RuleBasedDetector, classify_attack_distribution
+from dos_detector.detector import (
+    HybridDetector,
+    IsolationForestDetector,
+    RuleBasedDetector,
+    classify_attack_distribution,
+)
 from dos_detector.models import Severity, TrafficWindow
 
 
@@ -456,3 +461,130 @@ def test_rule_priority_dns_before_udp_flood() -> None:
     assert "DNS_FLOOD_SUSPECTED" in rule_names
     assert "UDP_FLOOD_SUSPECTED" not in rule_names
     assert "PACKET_RATE_FLOOD_SUSPECTED" not in rule_names
+
+
+@pytest.mark.unit
+def test_isolation_forest_detector_flags_anomalous_window() -> None:
+    """Verify IsolationForestDetector detects anomalous traffic and explains features."""
+    detector = IsolationForestDetector()
+
+    # Normal window matching baseline: 25 pps, varied IPs, normal ACKs
+    normal_win = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=25,
+        total_bytes=3000,
+        packet_rate=25.0,
+        byte_rate=3000.0,
+        syn_count=1,
+        ack_count=24,
+        rst_count=0,
+        unique_src_ips=10,
+        unique_dst_ports=2,
+        normalized_ip_entropy=0.75,
+        tcp_count=25,
+    )
+    normal_alerts = detector.evaluate_window(normal_win)
+    assert len(normal_alerts) == 0
+
+    # Anomalous window: massive flood with pure SYNs and concentrated target
+    flood_win = TrafficWindow(
+        start_time=1.0,
+        end_time=2.0,
+        total_packets=3000,
+        total_bytes=1_500_000,
+        packet_rate=3000.0,
+        byte_rate=1_500_000.0,
+        syn_count=3000,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        normalized_ip_entropy=0.0,
+        tcp_count=3000,
+        top_source_ip="172.16.0.5",
+        top_source_ip_ratio=1.0,
+        top_dst_port=80,
+        top_dst_port_ratio=1.0,
+    )
+    anomaly_alerts = detector.evaluate_window(flood_win)
+    assert len(anomaly_alerts) == 1
+    alert = anomaly_alerts[0]
+    assert alert.rule_name == "ML_ANOMALY_SUSPECTED"
+    assert alert.severity in (Severity.HIGH, Severity.CRITICAL)
+    assert alert.confidence >= 0.70
+    assert "Anomaly score" in alert.description
+    assert "Abnormal SYN ratio" in alert.description
+
+
+@pytest.mark.unit
+def test_hybrid_detector_prioritizes_rule_alerts(default_config: DetectionConfig) -> None:
+    """Verify HybridDetector returns specific rule alerts without duplicate ML alerts."""
+    detector = HybridDetector(config=default_config)
+
+    # Classic high-rate SYN flood
+    syn_win = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=500,
+        total_bytes=32000,
+        packet_rate=500.0,
+        byte_rate=32000.0,
+        syn_count=450,
+        ack_count=5,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        tcp_count=500,
+        top_source_ip="10.0.0.99",
+        top_source_ip_ratio=1.0,
+    )
+    alerts = detector.evaluate_window(syn_win)
+    assert len(alerts) == 1
+    assert alerts[0].rule_name == "SYN_FLOOD_SUSPECTED"
+
+
+@pytest.mark.unit
+def test_hybrid_detector_falls_back_to_ml_for_unmatched_anomaly() -> None:
+    """Verify HybridDetector falls back to Isolation Forest when rules do not trigger."""
+    # Custom config with high thresholds so rules do not fire on a moderate anomaly
+    config = DetectionConfig(
+        syn_flood_pps_threshold=1000.0,  # High threshold
+        packet_flood_pps_threshold=5000.0,  # High threshold
+        udp_flood_pps_threshold=5000.0,
+        min_consecutive_windows=1,
+        alert_cooldown_seconds=0.0,
+    )
+    detector = HybridDetector(config=config)
+
+    # Unusual traffic that does not meet the 1000 SYN/s rule, but is an ML anomaly
+    unusual_win = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=300,
+        total_bytes=100_000,
+        packet_rate=300.0,
+        byte_rate=100_000.0,
+        syn_count=280,
+        ack_count=0,
+        rst_count=0,
+        unique_src_ips=1,
+        unique_dst_ports=1,
+        normalized_ip_entropy=0.0,
+        tcp_count=300,
+        top_source_ip="192.168.100.5",
+        top_source_ip_ratio=1.0,
+    )
+
+    alerts = detector.evaluate_window(unusual_win)
+    assert len(alerts) == 1
+    assert alerts[0].rule_name == "ML_ANOMALY_SUSPECTED"
+
+
+@pytest.mark.unit
+def test_hybrid_detector_reset() -> None:
+    """Verify reset clears state across both detectors."""
+    detector = HybridDetector()
+    detector.reset()
+    assert detector.rule_detector._consecutive_violations == {}
+    assert detector.ml_detector._consecutive_violations == 0

@@ -8,7 +8,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from sklearn.ensemble import IsolationForest
+
 from dos_detector.config import DetectionConfig
+from dos_detector.ml import extract_window_features, get_default_baseline_model
 from dos_detector.models import DetectionAlert, Severity, TrafficWindow
 
 
@@ -444,3 +447,170 @@ class RuleBasedDetector(BaseDetector):
             )
 
         return alerts
+
+
+def _explain_anomalous_features(window: TrafficWindow) -> list[str]:
+    """Identify which traffic features deviated significantly to assist SOC analysts."""
+    reasons: list[str] = []
+    syn_tcp_ratio = (window.syn_count / window.tcp_count) if window.tcp_count > 0 else 0.0
+
+    if syn_tcp_ratio >= 0.50 and window.syn_count >= 10:
+        reasons.append(f"Abnormal SYN ratio in TCP ({syn_tcp_ratio * 100:.1f}%)")
+    if window.syn_ack_ratio >= 3.0 and window.syn_count >= 10:
+        reasons.append(f"High SYN/ACK disproportion ({window.syn_ack_ratio:.1f})")
+    if window.packet_rate >= 100.0:
+        reasons.append(f"Elevated packet rate ({window.packet_rate:.1f} pps)")
+    if window.byte_rate >= 1_000_000.0:
+        reasons.append(f"High bandwidth usage ({window.byte_rate / 1_000_000:.1f} MB/s)")
+    if window.normalized_ip_entropy >= 0.85 and window.unique_src_ips > 10:
+        reasons.append(f"High source IP entropy ({window.normalized_ip_entropy * 100:.1f}%)")
+    if window.top_source_ip_ratio >= 0.80 and window.packet_rate >= 50.0:
+        ip_label = window.top_source_ip or "primary host"
+        reasons.append(
+            f"Traffic concentrated from IP {ip_label} ({window.top_source_ip_ratio * 100:.1f}%)"
+        )
+    if window.top_dst_port_ratio >= 0.90 and window.unique_dst_ports <= 1:
+        reasons.append(
+            f"Concentrated destination port {window.top_dst_port} ({window.top_dst_port_ratio * 100:.1f}%)"
+        )
+    if window.top_http_uri_ratio >= 0.60 and window.http_request_count >= 10:
+        reasons.append(
+            f"Concentrated HTTP URI '{window.top_http_uri}' ({window.top_http_uri_ratio * 100:.1f}%)"
+        )
+    if window.dns_ratio >= 0.50 and window.dns_count >= 20:
+        reasons.append(f"Abnormal DNS share ({window.dns_ratio * 100:.1f}%)")
+    if window.udp_ratio >= 0.70 and window.udp_count >= 50:
+        reasons.append(f"Abnormal UDP share ({window.udp_ratio * 100:.1f}%)")
+
+    if not reasons:
+        reasons.append("Multidimensional feature space divergence (unusual metric combination)")
+
+    return reasons
+
+
+class IsolationForestDetector(BaseDetector):
+    """Machine-learning anomaly detector using Isolation Forest.
+
+    Evaluates window feature vectors against a trained Isolation Forest model,
+    identifying unusual multidimensional deviations from a legitimate traffic baseline.
+    """
+
+    def __init__(
+        self,
+        model: IsolationForest | None = None,
+        config: DetectionConfig | None = None,
+    ) -> None:
+        self.config = config or DetectionConfig()
+        self.model = model or get_default_baseline_model()
+        self._consecutive_violations: int = 0
+        self._last_alert_time: float = -1e9
+
+    def reset(self) -> None:
+        """Reset internal violation and alert suppression tracking state."""
+        self._consecutive_violations = 0
+        self._last_alert_time = -1e9
+
+    def _should_emit(self, triggered: bool, timestamp: float) -> bool:
+        """Check violation persistence and cooldown suppression before raising an alert."""
+        if not triggered:
+            self._consecutive_violations = 0
+            return False
+
+        self._consecutive_violations += 1
+
+        if self._consecutive_violations < self.config.min_consecutive_windows:
+            return False
+
+        if timestamp - self._last_alert_time < self.config.alert_cooldown_seconds:
+            return False
+
+        self._last_alert_time = timestamp
+        return True
+
+    def evaluate_window(self, window: TrafficWindow) -> list[DetectionAlert]:
+        """Evaluate traffic window against the Isolation Forest anomaly baseline."""
+        features = extract_window_features(window)
+        X = features.reshape(1, -1)
+
+        # In scikit-learn IsolationForest, negative decision function scores denote anomalies
+        anomaly_score = float(self.model.decision_function(X)[0])
+        prediction = int(self.model.predict(X)[0])  # -1 for anomaly, 1 for inlier
+        is_anomaly = prediction == -1 or anomaly_score < 0.0
+
+        if not self._should_emit(is_anomaly, window.end_time):
+            return []
+
+        # Severity scaling: negative scores indicate deviation from baseline
+        if anomaly_score <= -0.10 or window.packet_rate >= 3000.0:
+            severity = Severity.CRITICAL
+        elif anomaly_score <= -0.02 or window.packet_rate >= 1000.0:
+            severity = Severity.HIGH
+        else:
+            severity = Severity.MEDIUM
+
+        # Confidence calibrated based on anomaly score distance from boundary
+        confidence = min(0.99, max(0.60, 0.65 + abs(anomaly_score) * 4.0))
+
+        cls = classify_attack_distribution(window)
+        reasons = _explain_anomalous_features(window)
+
+        description = (
+            f"Isolation Forest detected abnormal traffic pattern (Anomaly score: {anomaly_score:.3f}). "
+            f"Key indicators: {', '.join(reasons)}. {cls.explanation}"
+        )
+
+        alert = DetectionAlert(
+            timestamp=window.end_time,
+            rule_name="ML_ANOMALY_SUSPECTED",
+            severity=severity,
+            attack_type=cls.attack_type,
+            distribution_confidence=cls.confidence,
+            dos_probability=cls.dos_probability,
+            ddos_probability=cls.ddos_probability,
+            description=description,
+            confidence=confidence,
+            metrics_snapshot={
+                "anomaly_score": anomaly_score,
+                "packet_rate": window.packet_rate,
+                "byte_rate": window.byte_rate,
+                "syn_ack_ratio": window.syn_ack_ratio,
+                "top_indicators": reasons,
+                "attack_type": cls.attack_type,
+                "distribution_confidence": cls.confidence,
+                "dos_probability": cls.dos_probability,
+                "ddos_probability": cls.ddos_probability,
+            },
+        )
+        return [alert]
+
+
+class HybridDetector(BaseDetector):
+    """Ensemble detector combining rule-based heuristics with machine learning fallback.
+
+    Evaluates high-precision deterministic rules first. If no rule is triggered,
+    evaluates Isolation Forest to detect novel, low-rate, or subtle zero-day anomalies.
+    """
+
+    def __init__(
+        self,
+        rule_detector: RuleBasedDetector | None = None,
+        ml_detector: IsolationForestDetector | None = None,
+        config: DetectionConfig | None = None,
+    ) -> None:
+        self.config = config or DetectionConfig()
+        self.rule_detector = rule_detector or RuleBasedDetector(config=self.config)
+        self.ml_detector = ml_detector or IsolationForestDetector(config=self.config)
+
+    def reset(self) -> None:
+        """Reset state across both sub-detectors."""
+        self.rule_detector.reset()
+        self.ml_detector.reset()
+
+    def evaluate_window(self, window: TrafficWindow) -> list[DetectionAlert]:
+        """Evaluate traffic window using prioritized rules with ML anomaly fallback."""
+        rule_alerts = self.rule_detector.evaluate_window(window)
+        if rule_alerts:
+            return rule_alerts
+
+        # Fallback to Isolation Forest when deterministic rules do not trigger
+        return self.ml_detector.evaluate_window(window)
