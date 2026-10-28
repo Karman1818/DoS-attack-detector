@@ -25,6 +25,15 @@ from dos_detector.ingestion import (
     stream_csv,
     stream_pcap,
 )
+from dos_detector.ml import (
+    FEATURE_NAMES,
+    extract_window_features,
+    extract_windows_matrix,
+    get_default_baseline_model,
+    load_model,
+    save_model,
+    train_isolation_forest,
+)
 from dos_detector.models import (
     DetectionAlert,
     PacketRecord,
@@ -44,6 +53,7 @@ __all__ = [
     "DetectionAlert",
     "DetectionConfig",
     "EvaluationMetrics",
+    "FEATURE_NAMES",
     "GroundTruthInterval",
     "InMemoryAlertSink",
     "PacketRecord",
@@ -54,7 +64,13 @@ __all__ = [
     "__version__",
     "compute_shannon_entropy",
     "compute_window_features",
+    "extract_window_features",
+    "extract_windows_matrix",
+    "get_default_baseline_model",
+    "load_model",
+    "save_model",
     "stream_csv",
     "stream_pcap",
     "stream_sliding_windows",
+    "train_isolation_forest",
 ]
