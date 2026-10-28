@@ -23,7 +23,12 @@ finally:
 from dos_detector import __version__
 from dos_detector.alerting import ConsoleAlertSink
 from dos_detector.config import DetectionConfig
-from dos_detector.detector import RuleBasedDetector
+from dos_detector.detector import (
+    BaseDetector,
+    HybridDetector,
+    IsolationForestDetector,
+    RuleBasedDetector,
+)
 from dos_detector.evaluation import (
     DatasetEvaluator,
     generate_synthetic_benchmark_stream,
@@ -33,6 +38,12 @@ from dos_detector.ingestion import (
     CIC_IDS2017_CSV_MAPPING,
     stream_csv,
     stream_pcap,
+)
+from dos_detector.ml import (
+    get_default_baseline_model,
+    load_model,
+    save_model,
+    train_isolation_forest,
 )
 from dos_detector.models import PacketRecord
 
@@ -107,6 +118,9 @@ def _generate_synthetic_demo_pcap(target_path: Path) -> int:
 
 def _build_detection_config(args: argparse.Namespace) -> DetectionConfig:
     """Construct DetectionConfig from parsed CLI arguments."""
+    raw_mode = getattr(args, "detector", "hybrid")
+    detector_mode = "base" if raw_mode == "rule" else raw_mode
+
     return DetectionConfig(
         window_size_seconds=args.window,
         syn_flood_pps_threshold=args.syn_threshold,
@@ -115,7 +129,45 @@ def _build_detection_config(args: argparse.Namespace) -> DetectionConfig:
         http_flood_pps_threshold=args.http_threshold,
         min_consecutive_windows=args.min_consecutive,
         alert_cooldown_seconds=args.cooldown,
+        detector_mode=detector_mode,
+        ml_model_path=getattr(args, "model", None),
     )
+
+
+def _build_detector(
+    config: DetectionConfig,
+    model_path: str | Path | None = None,
+) -> tuple[BaseDetector, str, str]:
+    """Create configured detector instance and return (detector, mode_label, model_description)."""
+    mode = config.detector_mode.lower()
+    if mode == "rule":
+        mode = "base"
+
+    model_desc = "Built-in reference baseline (Isolation Forest)"
+    ml_model = None
+    if mode in ("ml", "hybrid"):
+        target_path = model_path or config.ml_model_path
+        if target_path:
+            ml_model = load_model(target_path)
+            model_desc = f"Custom model ({Path(target_path).name})"
+        else:
+            ml_model = get_default_baseline_model()
+
+    if mode == "base":
+        return RuleBasedDetector(config=config), "base", "N/A (Rule-based heuristics)"
+    elif mode == "ml":
+        return IsolationForestDetector(model=ml_model, config=config), "ml", model_desc
+    elif mode == "hybrid":
+        rule_det = RuleBasedDetector(config=config)
+        ml_det = IsolationForestDetector(model=ml_model, config=config)
+        return (
+            HybridDetector(rule_detector=rule_det, ml_detector=ml_det, config=config),
+            "hybrid",
+            model_desc,
+        )
+    else:
+        msg = f"Unknown detector mode: {mode}"
+        raise ValueError(msg)
 
 
 def _process_packet_stream(
@@ -126,7 +178,7 @@ def _process_packet_stream(
 ) -> None:
     """Run sliding window feature extraction and detection engine on packet stream."""
     sink = ConsoleAlertSink()
-    detector = RuleBasedDetector(config=config)
+    detector, mode_label, model_desc = _build_detector(config, model_path=config.ml_model_path)
     aggregator = SlidingWindowAggregator(
         window_size=config.window_size_seconds,
         step_size=step_size,
@@ -134,42 +186,48 @@ def _process_packet_stream(
 
     print("\n" + "=" * 88)
     print(f"[*] Analyzing Network Traffic Source: {source_desc}")
+    print(f"[*] Running analysis with [{mode_label}] detector engine")
+    if mode_label in ("ml", "hybrid"):
+        print(f"[*] ML Anomaly Model: {model_desc}")
     print(
         f"[*] Observation Horizon: Window={config.window_size_seconds}s (step={step_size}s) | "
         f"Min Consecutive={config.min_consecutive_windows} | "
         f"Alert Cooldown={config.alert_cooldown_seconds}s"
     )
-    print("[*] Active Detection Engine Thresholds (Prioritized by Attack Specificity):")
-    print(
-        "+---------------------------+---------------+------------------------------------------+"
-    )
-    print(
-        "| Heuristic Rule            | Threshold     | Trigger Condition                        |"
-    )
-    print(
-        "+---------------------------+---------------+------------------------------------------+"
-    )
-    print(
-        f"| DNS Flood (L4/L7)         | >= {config.dns_flood_pps_threshold:.0f} pps    | Port 53 UDP/TCP | DRDoS Amplification    |"
-    )
-    print(
-        f"| HTTP WebDDoS (L7)         | >= {config.http_flood_pps_threshold:.0f} req/s   | Ports 80/8080 | URI Repetition >= {config.http_uri_repetition_threshold * 100:.0f}%   |"
-    )
-    print(
-        f"| TCP SYN Flood (L4)        | >= {config.syn_flood_pps_threshold:.0f} pps    | SYN/ACK >= {config.syn_ack_ratio_threshold:.1f} OR (>=500 pps & SYN>=70%) |"
-    )
-    print(
-        f"| UDP Flood (General)       | >= {config.udp_flood_pps_threshold:.0f} pps   | UDP Ratio >= {config.udp_ratio_threshold * 100:.0f}% (non-DNS fallback)      |"
-    )
-    print(
-        f"| Volumetric Throughput     | >= {config.volumetric_bps_threshold / 1_000_000:.1f} MB/s  | Bandwidth byte flood fallback            |"
-    )
-    print(
-        f"| Packet Rate Flood (Gen)   | >= {config.packet_flood_pps_threshold:.0f} pps   | Focused packet flood fallback            |"
-    )
-    print(
-        "+---------------------------+---------------+------------------------------------------+"
-    )
+    if mode_label in ("base", "hybrid"):
+        print("[*] Active Detection Engine Thresholds (Prioritized by Attack Specificity):")
+        print(
+            "+---------------------------+---------------+------------------------------------------+"
+        )
+        print(
+            "| Heuristic Rule            | Threshold     | Trigger Condition                        |"
+        )
+        print(
+            "+---------------------------+---------------+------------------------------------------+"
+        )
+        print(
+            f"| DNS Flood (L4/L7)         | >= {config.dns_flood_pps_threshold:.0f} pps    | Port 53 UDP/TCP | DRDoS Amplification    |"
+        )
+        print(
+            f"| HTTP WebDDoS (L7)         | >= {config.http_flood_pps_threshold:.0f} req/s   | Ports 80/8080 | URI Repetition >= {config.http_uri_repetition_threshold * 100:.0f}%   |"
+        )
+        print(
+            f"| TCP SYN Flood (L4)        | >= {config.syn_flood_pps_threshold:.0f} pps    | SYN/ACK >= {config.syn_ack_ratio_threshold:.1f} OR (>=500 pps & SYN>=70%) |"
+        )
+        print(
+            f"| UDP Flood (General)       | >= {config.udp_flood_pps_threshold:.0f} pps   | UDP Ratio >= {config.udp_ratio_threshold * 100:.0f}% (non-DNS fallback)      |"
+        )
+        print(
+            f"| Volumetric Throughput     | >= {config.volumetric_bps_threshold / 1_000_000:.1f} MB/s  | Bandwidth byte flood fallback            |"
+        )
+        print(
+            f"| Packet Rate Flood (Gen)   | >= {config.packet_flood_pps_threshold:.0f} pps   | Focused packet flood fallback            |"
+        )
+        print(
+            "+---------------------------+---------------+------------------------------------------+"
+        )
+    elif mode_label == "ml":
+        print("[*] Unsupervised Multidimensional Anomaly Profiling Active (10 features)")
     print("=" * 88 + "\n")
 
     total_packets_inspected = 0
@@ -248,12 +306,16 @@ def cmd_csv(args: argparse.Namespace) -> None:
 def cmd_evaluate(args: argparse.Namespace) -> None:
     """Evaluate detector against labeled datasets (e.g., CIC-IDS2017) or synthetic benchmarks."""
     config = _build_detection_config(args)
-    detector = RuleBasedDetector(config=config)
+    detector, mode_label, model_desc = _build_detector(config, model_path=config.ml_model_path)
     evaluator = DatasetEvaluator(
         detector=detector,
         window_size=config.window_size_seconds,
         step_size=args.step,
     )
+
+    print(f"\n[*] Running evaluation with [{mode_label}] detector engine")
+    if mode_label in ("ml", "hybrid"):
+        print(f"[*] ML Anomaly Model: {model_desc}")
 
     if args.demo:
         print("[*] Generating and evaluating on synthetic multi-vector benchmark stream...")
@@ -296,8 +358,82 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
         print(f"[+] Exported evaluation metrics JSON to: {export_path}")
 
 
+def cmd_train(args: argparse.Namespace) -> None:
+    """Train an Isolation Forest baseline model on benign traffic."""
+    model_out = Path(args.model_out)
+    aggregator = SlidingWindowAggregator(
+        window_size=args.window,
+        step_size=args.step,
+    )
+
+    if args.demo:
+        print("[*] Generating synthetic benign baseline traffic for training...")
+        packets = [p for p in generate_synthetic_benchmark_stream() if p.label == "BENIGN"]
+    elif args.pcap:
+        pcap_path = Path(args.pcap)
+        if not pcap_path.is_file():
+            print(f"[ERROR] PCAP file not found: {pcap_path}", file=sys.stderr)
+            sys.exit(1)
+        print(f"[*] Streaming packets from benign PCAP: {pcap_path} ...")
+        packets = list(stream_pcap(pcap_path))
+    elif args.csv:
+        csv_path = Path(args.csv)
+        if not csv_path.is_file():
+            print(f"[ERROR] CSV file not found: {csv_path}", file=sys.stderr)
+            sys.exit(1)
+        mapping = CIC_IDS2017_CSV_MAPPING if args.cic else None
+        print(f"[*] Streaming packets from CSV: {csv_path} ...")
+        raw_stream = stream_csv(csv_path, mapping=mapping)
+        packets = [
+            p
+            for p in raw_stream
+            if p.label is None or p.label.strip().upper() in {"BENIGN", "NORMAL", "0"}
+        ]
+    else:
+        print(
+            "[ERROR] Specify training input: --demo, --pcap <file>, or --csv <file>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f"[*] Aggregating {len(packets):,} packets into observation windows...")
+    windows = list(aggregator.aggregate(packets))
+
+    if len(windows) < 2:
+        print(
+            f"[ERROR] Insufficient observation windows generated ({len(windows)}). At least 2 required.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(
+        f"[*] Training Isolation Forest on {len(windows):,} windows "
+        f"(contamination={args.contamination}, estimators={args.estimators}) ..."
+    )
+    model = train_isolation_forest(
+        windows=windows,
+        contamination=args.contamination,
+        n_estimators=args.estimators,
+    )
+
+    save_model(model, model_out)
+    print(f"[+] Successfully trained and saved Isolation Forest model to: {model_out}\n")
+
+
 def _add_common_detection_args(subparser: argparse.ArgumentParser) -> None:
     """Register common detection threshold and window flags across CLI subcommands."""
+    subparser.add_argument(
+        "--detector",
+        choices=["hybrid", "base", "rule", "ml"],
+        default="hybrid",
+        help="Detection engine: 'hybrid' (rules + ML fallback, default), 'base' (rules only), 'ml' (Isolation Forest only)",
+    )
+    subparser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Path to custom trained Isolation Forest .joblib model (defaults to built-in baseline)",
+    )
     subparser.add_argument(
         "--window",
         type=float,
@@ -419,6 +555,54 @@ def main() -> None:
     _add_common_detection_args(parser_eval)
     # Default cooldown to 0.0s for evaluation so individual window classification is not suppressed
     parser_eval.set_defaults(cooldown=0.0, func=cmd_evaluate)
+
+    # Subcommand: train
+    parser_train = subparsers.add_parser(
+        "train",
+        help="Train an Isolation Forest anomaly detection model on benign network traffic.",
+    )
+    parser_train.add_argument("--pcap", help="Path to benign PCAP capture file.")
+    parser_train.add_argument("--csv", help="Path to benign CSV file (e.g. CIC-IDS2017).")
+    parser_train.add_argument(
+        "--cic",
+        action="store_true",
+        help="Use CIC-IDS2017 dataset column mapping format.",
+    )
+    parser_train.add_argument(
+        "--demo",
+        action="store_true",
+        help="Generate synthetic benign traffic for demo model training.",
+    )
+    parser_train.add_argument(
+        "--model-out",
+        required=True,
+        help="Destination path for the trained model artifact (e.g. models/baseline.joblib).",
+    )
+    parser_train.add_argument(
+        "--contamination",
+        type=float,
+        default=0.01,
+        help="Expected contamination / outlier ratio in training data (default: 0.01).",
+    )
+    parser_train.add_argument(
+        "--estimators",
+        type=int,
+        default=100,
+        help="Number of isolation trees in the forest (default: 100).",
+    )
+    parser_train.add_argument(
+        "--window",
+        type=float,
+        default=1.0,
+        help="Time window size in seconds (default: 1.0).",
+    )
+    parser_train.add_argument(
+        "--step",
+        type=float,
+        default=0.2,
+        help="Sliding step size in seconds (default: 0.2).",
+    )
+    parser_train.set_defaults(func=cmd_train)
 
     args = parser.parse_args()
     args.func(args)

@@ -55,10 +55,18 @@ The codebase follows the modern Python `src` layout (`src/dos_detector/`):
 - **`compute_shannon_entropy`**: Shannon entropy and normalized entropy (0.0 to 1.0) calculation on IP distributions.
 - **`compute_window_features`**: Pure function calculating rates, flag distributions, protocol breakdowns, victim target concentration, and entropy metrics for a batch of records.
 
+### `ml.py` (Machine Learning & Isolation Forest Anomaly Detection)
+- **`FEATURE_NAMES` & `extract_window_features`**: Transforms an immutable `TrafficWindow` into a sanitized 10-dimensional numerical feature vector for tree-based anomaly isolation.
+- **`train_isolation_forest`**: Unsupervised baseline profiling fitting scikit-learn's `IsolationForest` on legitimate benign traffic.
+- **Model Persistence**: Safe artifact serialization and deserialization via `joblib`.
+- **`get_default_baseline_model`**: Automatic cached baseline model providing out-of-the-box ML anomaly detection without requiring prior manual model training.
+
 ### `detector.py` (Detection Logic)
 - Implements `BaseDetector` (Abstract Base Class).
 - **`classify_attack_distribution`**: Classifies whether an anomaly is single-source DoS, coordinated DoS, distributed DDoS, or benign multi-target transit traffic (`DISTRIBUTED_TRANSIT_TRAFFIC`) by coupling Shannon entropy with victim target concentration.
-- **`RuleBasedDetector`**: Evaluates deterministic heuristics against a `TrafficWindow` (DNS amplification/flood, UDP flood, TCP SYN flood, volumetric flood, and subsumed packet flood) with sliding window persistence (`min_consecutive_windows`) and cooldown deduplication.
+- **`RuleBasedDetector` (`base`)**: Evaluates deterministic heuristics against a `TrafficWindow` (DNS amplification/flood, UDP flood, TCP SYN flood, HTTP WebDDoS, volumetric flood, and subsumed packet flood) with sliding window persistence (`min_consecutive_windows`) and cooldown deduplication.
+- **`IsolationForestDetector` (`ml`)**: Evaluates multidimensional feature divergences from the baseline, scoring anomalies and explaining which metrics triggered the alert (`_explain_anomalous_features`).
+- **`HybridDetector` (`hybrid`)**: Ensemble engine combining high-precision rule heuristics with an unsupervised Isolation Forest fallback for low-rate and novel anomalies.
 
 ### `alerting.py` (Output Abstraction)
 - Defines `AlertSink` protocol.

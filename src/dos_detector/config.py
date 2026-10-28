@@ -48,6 +48,13 @@ class DetectionConfig:
     # Minimum time between duplicate alerts for the same rule (avoids alert storms in sliding windows)
     alert_cooldown_seconds: float = 1.0
 
+    # Detection engine mode: 'hybrid' (rules + ML fallback), 'base' (rules only), or 'ml' (Isolation Forest only)
+    detector_mode: str = "hybrid"
+
+    # Machine Learning (Isolation Forest) settings
+    ml_model_path: str | None = None
+    ml_contamination: float = 0.01
+
     def validate(self) -> None:
         """Validate configuration parameters.
 
@@ -86,4 +93,11 @@ class DetectionConfig:
             raise ValueError(msg)
         if self.alert_cooldown_seconds < 0:
             msg = f"alert_cooldown_seconds must be non-negative, got {self.alert_cooldown_seconds}"
+            raise ValueError(msg)
+        valid_modes = {"base", "rule", "ml", "hybrid"}
+        if self.detector_mode.lower() not in valid_modes:
+            msg = f"detector_mode must be one of {valid_modes}, got '{self.detector_mode}'"
+            raise ValueError(msg)
+        if not (0.0 < self.ml_contamination < 0.5):
+            msg = f"ml_contamination must be between 0.0 and 0.5, got {self.ml_contamination}"
             raise ValueError(msg)

@@ -70,17 +70,40 @@ uv sync --extra dev
 ### Run the Interactive Demonstration
 Generate synthetic network traffic (benign web browsing followed by an aggressive SYN flood surge) and inspect live detections:
 ```bash
+# Default mode: hybrid engine (deterministic rules + Isolation Forest anomaly fallback)
 uv run dos-detector demo
+
+# Explicitly select detector engine: 'hybrid' (default), 'base' (rules only), or 'ml' (Isolation Forest only)
+uv run dos-detector demo --detector base
+uv run dos-detector demo --detector ml
+uv run dos-detector demo --detector hybrid
 ```
 
 ### Analyze an Offline PCAP/PCAPNG Capture
 ```bash
+# Analyze using the default hybrid detector
 uv run dos-detector pcap data/raw/capture.pcap --window 1.0 --syn-threshold 100.0
+
+# Analyze using a custom trained Isolation Forest baseline model
+uv run dos-detector pcap data/raw/capture.pcap --detector ml --model models/baseline.joblib
 ```
 
 ### Analyze a Tabular CSV Log (e.g., CIC-IDS2017)
 ```bash
-uv run dos-detector csv data/cic_ids2017/Friday-WorkingHours.csv --cic
+uv run dos-detector csv data/cic_ids2017/Friday-WorkingHours.csv --cic --detector hybrid
+```
+
+### Train a Custom Isolation Forest Anomaly Detection Baseline
+Fit an Isolation Forest model on known benign network traffic to establish an environment-specific baseline:
+```bash
+# 1. Train on benign PCAP capture
+uv run dos-detector train --pcap data/raw/benign.pcap --model-out models/custom_baseline.joblib
+
+# 2. Train on benign CIC-IDS2017 CSV flow records
+uv run dos-detector train --csv data/cic_ids2017/Monday-WorkingHours.csv --cic --model-out models/cic_baseline.joblib
+
+# 3. Train on synthetic demo baseline
+uv run dos-detector train --demo --model-out models/demo_baseline.joblib
 ```
 
 ### Evaluate Detection Accuracy on Labeled Datasets (e.g., CIC-IDS2017)

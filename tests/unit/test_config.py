@@ -25,3 +25,21 @@ def test_invalid_syn_threshold_raises_value_error() -> None:
     config = DetectionConfig(syn_flood_pps_threshold=-5.0)
     with pytest.raises(ValueError, match="syn_flood_pps_threshold must be positive"):
         config.validate()
+
+
+@pytest.mark.unit
+def test_invalid_detector_mode_raises_value_error() -> None:
+    config = DetectionConfig(detector_mode="invalid_engine")
+    with pytest.raises(ValueError, match="detector_mode must be one of"):
+        config.validate()
+
+
+@pytest.mark.unit
+def test_invalid_ml_contamination_raises_value_error() -> None:
+    config_zero = DetectionConfig(ml_contamination=0.0)
+    with pytest.raises(ValueError, match="ml_contamination must be between"):
+        config_zero.validate()
+
+    config_high = DetectionConfig(ml_contamination=0.6)
+    with pytest.raises(ValueError, match="ml_contamination must be between"):
+        config_high.validate()
