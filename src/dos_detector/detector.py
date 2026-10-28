@@ -145,6 +145,10 @@ class BaseDetector(ABC):
             List of suspicious activity alerts detected within the window.
         """
 
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset internal state, violation tracking, and alert suppression history."""
+
 
 class RuleBasedDetector(BaseDetector):
     """Rule-based DoS detector evaluating deterministic threshold heuristics.

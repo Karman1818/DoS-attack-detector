@@ -4,6 +4,8 @@ A defensive, offline network traffic analysis engine for detecting Denial-of-Ser
 attack patterns using configurable rules and anomaly detection.
 """
 
+__version__ = "0.1.0"
+
 from dos_detector.alerting import AlertSink, InMemoryAlertSink
 from dos_detector.config import DetectionConfig
 from dos_detector.detector import (
@@ -45,8 +47,7 @@ from dos_detector.models import (
     Severity,
     TrafficWindow,
 )
-
-__version__ = "0.1.0"
+from dos_detector.server import create_app
 
 __all__ = [
     "CIC_IDS2017_CSV_MAPPING",
@@ -71,6 +72,7 @@ __all__ = [
     "__version__",
     "compute_shannon_entropy",
     "compute_window_features",
+    "create_app",
     "extract_window_features",
     "extract_windows_matrix",
     "get_default_baseline_model",

@@ -420,6 +420,31 @@ def cmd_train(args: argparse.Namespace) -> None:
     print(f"[+] Successfully trained and saved Isolation Forest model to: {model_out}\n")
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    """Start the FastAPI backend server and embedded SOC monitoring dashboard."""
+    import uvicorn
+
+    from dos_detector.server import create_app
+
+    config = _build_detection_config(args)
+    detector, mode_label, model_desc = _build_detector(config, model_path=config.ml_model_path)
+
+    print("\n" + "=" * 80)
+    print("  DoS ATTACK DETECTOR - SOC MONITORING & REST API SERVER")
+    print("=" * 80)
+    print(f"[*] Running analysis with [{mode_label}] detector engine")
+    if mode_label in ("ml", "hybrid"):
+        print(f"[*] ML Anomaly Model: {model_desc}")
+    print(f"[*] Server listening on: http://{args.host}:{args.port}")
+    print(f"[*] Embedded Dashboard:  http://{args.host}:{args.port}/")
+    print(f"[*] OpenAPI REST Specs:  http://{args.host}:{args.port}/docs")
+    print("=" * 80)
+    print("[!] Press CTRL+C to safely shutdown the web server.\n")
+
+    app = create_app(config=config, detector=detector)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+
 def _add_common_detection_args(subparser: argparse.ArgumentParser) -> None:
     """Register common detection threshold and window flags across CLI subcommands."""
     subparser.add_argument(
@@ -603,6 +628,25 @@ def main() -> None:
         help="Sliding step size in seconds (default: 0.2).",
     )
     parser_train.set_defaults(func=cmd_train)
+
+    # Subcommand: serve
+    parser_serve = subparsers.add_parser(
+        "serve",
+        help="Start the FastAPI backend server and embedded SOC monitoring dashboard.",
+    )
+    parser_serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host network interface to bind server to (default: 127.0.0.1).",
+    )
+    parser_serve.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port number to bind server to (default: 8000).",
+    )
+    _add_common_detection_args(parser_serve)
+    parser_serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args()
     args.func(args)

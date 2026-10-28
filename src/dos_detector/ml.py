@@ -84,6 +84,7 @@ def train_isolation_forest(
     contamination: float = 0.01,
     n_estimators: int = 100,
     random_state: int = 42,
+    n_jobs: int = 1,
 ) -> IsolationForest:
     """Train an Isolation Forest anomaly detector on benign baseline windows.
 
@@ -92,6 +93,7 @@ def train_isolation_forest(
         contamination: Estimated proportion of outliers in the baseline training set.
         n_estimators: Number of isolation trees to construct.
         random_state: Deterministic seed for reproducible tree construction.
+        n_jobs: Number of CPU cores to use for parallel tree construction (default 1).
 
     Returns:
         Fitted IsolationForest model.
@@ -109,7 +111,7 @@ def train_isolation_forest(
         n_estimators=n_estimators,
         contamination=contamination,
         random_state=random_state,
-        n_jobs=-1,
+        n_jobs=n_jobs,
     )
     model.fit(feature_matrix)
     logger.info(

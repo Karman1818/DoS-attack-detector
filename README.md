@@ -79,6 +79,20 @@ uv run dos-detector demo --detector ml
 uv run dos-detector demo --detector hybrid
 ```
 
+### Launch the Web Monitoring Dashboard & REST API
+Start the embedded dark-theme SOC monitoring dashboard and FastAPI backend:
+```bash
+# Start server on default http://127.0.0.1:8000
+uv run dos-detector serve
+
+# Start with custom port or detector mode
+uv run dos-detector serve --port 8080 --detector hybrid
+```
+Once started, access:
+- **Interactive SOC Dashboard**: `http://127.0.0.1:8000/` (Live PPS/BPS chart, KPI anomaly cards, 1-click educational attack simulation demo, drag-and-drop PCAP/CSV upload, and real-time alert feed with XAI feature explanations)
+- **OpenAPI / Swagger Documentation**: `http://127.0.0.1:8000/docs`
+
+
 ### Analyze an Offline PCAP/PCAPNG Capture
 ```bash
 # Analyze using the default hybrid detector
@@ -127,7 +141,7 @@ uv run dos-detector evaluate --pcap data/cic_ids2017/Friday.pcap --schedule data
 All commands are run within the managed virtual environment using `uv run`:
 
 ```bash
-# Run the test suite (17 unit and integration tests)
+# Run the test suite (64 unit and integration tests)
 uv run pytest -v
 
 # Run only unit tests
@@ -158,10 +172,13 @@ src/dos_detector/
 ├── alerting.py        # AlertSink protocols and console sinks
 ├── cli.py             # Interactive CLI entrypoint
 ├── config.py          # DetectionConfig thresholds
-├── detector.py        # BaseDetector and RuleBasedDetector
-├── features.py        # compute_window_features aggregation
+├── detector.py        # BaseDetector, RuleBasedDetector, IsolationForest, Hybrid
+├── evaluation.py      # Benchmark evaluation harness, confusion matrix, CIC-IDS2017
+├── features.py        # compute_window_features and SlidingWindowAggregator
 ├── ingestion.py       # stream_pcap and stream_csv generators
-└── models.py          # Immutable PacketRecord, TrafficWindow, DetectionAlert
+├── ml.py              # Isolation Forest baseline training & feature extraction
+├── models.py          # Immutable PacketRecord, TrafficWindow, DetectionAlert
+└── server.py          # FastAPI backend and embedded SOC monitoring dashboard
 ```
 
 See [docs/architecture.md](docs/architecture.md) for full architectural documentation.

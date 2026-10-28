@@ -26,6 +26,9 @@ dependencies = [
     "scapy>=2.5.0",
     "pandas>=2.2.0",
     "numpy>=1.26.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +37,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "pre-commit>=3.7.0",
+    "httpx>=0.27.0",
 ]
 ml = [
     "scikit-learn>=1.5.0",
@@ -98,6 +102,7 @@ module = [
     "pandas.*",
     "sklearn.*",
     "joblib.*",
+    "uvicorn.*",
 ]
 ignore_missing_imports = true
 

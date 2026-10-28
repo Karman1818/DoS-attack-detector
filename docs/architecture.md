@@ -79,23 +79,39 @@ The codebase follows the modern Python `src` layout (`src/dos_detector/`):
 - **`DatasetEvaluator`**: End-to-end evaluation runner streaming labeled CSV flows or PCAPs, tracking confusion matrices, per-attack recall breakdown, and JSON export.
 - **`generate_synthetic_benchmark_stream`**: Deterministic multi-phase benchmark generator (Benign baseline + SYN flood + HTTP WebDDoS + UDP flood) for testing and educational validation without multi-gigabyte downloads.
 
+### `server.py` (FastAPI Monitoring Backend & SOC Dashboard)
+- **REST API Endpoints**:
+  - `GET /`: Serves the embedded HTML5/CSS/JavaScript SOC dashboard.
+  - `GET /api/health`: Provides detector health, active detection mode, telemetry counters, and version info.
+  - `GET /api/config` & `POST /api/config`: Dynamic runtime inspection and reconfiguration of detection thresholds and detector modes (`hybrid`, `base`, `ml`).
+  - `POST /api/analyze/demo`: Evaluates synthetic multi-phase educational traffic and returns timeline series data with triggered alert tags.
+  - `POST /api/analyze/upload`: Safely ingests uploaded offline capture files (`.pcap`, `.pcapng`, `.csv`), buffers them into temporary files, evaluates windows, and unlinks files immediately upon completion.
+  - `GET /api/alerts` & `POST /api/alerts/clear`: Fetches historical alerts and resets state.
+- **Embedded SOC Dashboard**:
+  - Responsive dark-theme dashboard designed for SOC/CERT analysts.
+  - Interactive Chart.js timeline showing packet rates (PPS), bandwidth (BPS), and shaded anomaly zones.
+  - Drag-and-drop offline capture file upload with format validation.
+  - Real-time alert feed displaying attack classification (Single-source DoS vs DDoS), severity tags, and explainable AI feature contribution badges.
+
 ---
 
-## 4. Planned Extension Points
+## 4. Planned Extension Points & Roadmap
 
 The architecture is designed to accommodate planned enhancements without requiring rewrites:
 
 ```mermaid
 flowchart LR
     W["TrafficWindow"] --> R["Rule-Based Engine\n(RuleBasedDetector)"]
-    W --> M["Machine Learning Engine\n(Isolation Forest / One-Class SVM)"]
+    W --> M["Machine Learning Engine\n(Isolation Forest)"]
     R --> S["AlertSink Protocol"]
     M --> S
     S --> C["Console Sink"]
-    S --> J["JSON / File Sink"]
-    S --> API["FastAPI / SIEM Sink"]
+    S --> J["JSON Telemetry Sink"]
+    S --> API["FastAPI Web Dashboard"]
+    S --> SIEM["SIEM Forwarder\n(CEF / Syslog RFC 5424)"]
 ```
 
-1. **Machine-Learning Anomaly Detection**: Implementing `MLDetector(BaseDetector)` utilizing scikit-learn models (such as `IsolationForest`) trained on normal baseline traffic.
-2. **Benchmark Evaluation**: Evaluating pipeline detection rates and false positives on the CIC-IDS2017 dataset.
-3. **Web Dashboard & SIEM Export**: Connecting the `AlertSink` protocol to a lightweight FastAPI dashboard or JSON telemetry forwarder.
+1. **[Completed] Benchmark Evaluation**: Quantitative evaluation harness measuring precision, recall, and false positives on CIC-IDS2017 and multi-phase synthetic benchmarks.
+2. **[Completed] Machine-Learning Anomaly Detection**: Unsupervised Isolation Forest baseline profiling with Explainable AI (XAI) feature divergence tagging.
+3. **[Completed] Web Dashboard & FastAPI Backend**: Interactive single-page SOC monitoring dashboard and REST API served via Uvicorn.
+4. **[Planned Final Step] SIEM Integration & Alert Sinks**: Standardized Common Event Format (CEF) and Syslog (RFC 5424) export forwarder for enterprise SIEM ingestion (e.g., Splunk, Microsoft Sentinel, Wazuh).
