@@ -356,6 +356,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <input type="file" id="fileInput" style="display: none;" accept=".pcap,.pcapng,.cap,.csv,.tsv" onchange="handleFileSelection(this)">
+
   <div class="action-panel">
     <div class="card" style="display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 12px;">
       <h3 style="font-size: 15px;">1-Click Synthetic Attack Demo</h3>
@@ -364,10 +366,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-      <input type="file" id="fileInput" style="display: none;" accept=".pcap,.pcapng,.cap,.csv,.tsv" onchange="if(this.files[0]) uploadFile(this.files[0]); this.value='';">
-      <div id="uploadIcon" style="font-size: 26px; margin-bottom: 6px;">📂</div>
-      <h3 id="uploadTitle" style="font-size: 14px; margin-bottom: 4px; color: #fff;">Upload Offline PCAP or CSV File</h3>
-      <p id="uploadDesc" style="font-size: 12px; color: var(--text-muted);">Drag & drop or click to analyze saved captures (PCAP, PCAPNG, CSV)</p>
+      <div id="uploadIcon" style="font-size: 28px; margin-bottom: 6px;">📂</div>
+      <h3 id="uploadTitle" style="font-size: 15px; margin-bottom: 4px; color: #fff;">Upload Offline PCAP or CSV File</h3>
+      <p id="uploadDesc" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">Drag &amp; drop capture file or click anywhere to select (.pcap, .pcapng, .csv)</p>
+      <button type="button" class="btn" style="pointer-events: none; padding: 6px 14px; font-size: 13px;">Browse PCAP / CSV</button>
     </div>
   </div>
 
@@ -398,8 +400,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let chart = null;
 
     async function initChart() {
-      const ctx = document.getElementById('trafficChart').getContext('2d');
-      chart = new Chart(ctx, {
+      try {
+        const canvas = document.getElementById('trafficChart');
+        if (!canvas || typeof Chart === 'undefined') return;
+        const ctx = canvas.getContext('2d');
+        chart = new Chart(ctx, {
         type: 'line',
         data: {
           labels: [],
@@ -436,6 +441,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           }
         }
       });
+      } catch (err) {
+        console.warn('Chart initialization skipped or deferred:', err);
+      }
     }
 
     async function fetchHealth() {
@@ -474,7 +482,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
         document.getElementById('engineDesc').innerText = 'Active Model: ' + data.model_description;
         document.getElementById('btnResetModel').style.display = 'inline-flex';
-        alert('Custom model activated successfully:\n' + data.model_description);
+        alert('Custom model activated successfully:\\n' + data.model_description);
       } catch (err) {
         alert('Network error while uploading model: ' + err.message);
       }
@@ -503,14 +511,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       await fetchHealth();
     }
 
+    function handleFileSelection(input) {
+      if (input && input.files && input.files[0]) {
+        uploadFile(input.files[0]);
+      }
+    }
+
     async function runDemo() {
       const btn = document.getElementById('btnDemo');
       btn.innerText = 'Analyzing...';
       btn.disabled = true;
       try {
         const res = await fetch('/api/analyze/demo', { method: 'POST' });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText);
+        }
         const data = await res.json();
         renderResults(data);
+      } catch (err) {
+        console.error('Demo simulation failed:', err);
+        alert('Simulation demo error: ' + err.message);
       } finally {
         btn.innerText = '▶ Run Simulation Demo';
         btn.disabled = false;
@@ -524,7 +545,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const fileNameLower = file.name.toLowerCase();
       const isValid = validExts.some(ext => fileNameLower.endsWith(ext));
       if (!isValid) {
-        alert('Unsupported file format. Please upload a .pcap, .pcapng, or .csv capture file.');
+        alert('Unsupported file format "' + file.name + '". Please upload a .pcap, .pcapng, or .csv file.');
         return;
       }
 
@@ -535,7 +556,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       zone.classList.add('busy');
       icon.innerHTML = '<span class="spinner"></span>';
-      title.innerText = `Analyzing: ${file.name}...`;
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      title.innerText = `Analyzing: ${file.name} (${sizeMb} MB)...`;
       desc.innerText = 'Extracting sliding windows and evaluating heuristics. Please wait...';
 
       try {
@@ -553,10 +575,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const parsed = JSON.parse(errText);
             detail = parsed.detail || errText;
           } catch (_) {}
-          alert('Analysis failed: ' + detail);
           icon.innerText = '⚠️';
           title.innerText = 'Upload / Analysis Failed';
           desc.innerText = detail;
+          alert('Analysis failed: ' + detail);
           return;
         }
 
@@ -566,12 +588,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         title.innerText = `Completed: ${file.name}`;
         desc.innerText = `Evaluated ${data.total_packets.toLocaleString()} packets across ${data.total_windows} windows (${data.total_alerts} alerts). Click or drop another.`;
       } catch (err) {
-        alert('Network or server error during upload: ' + err.message);
+        console.error('Upload failed:', err);
         icon.innerText = '❌';
         title.innerText = 'Connection Error';
         desc.innerText = 'Failed to communicate with detector server.';
+        alert('Cannot reach detector server: ' + err.message + '\\n\\nMake sure "uv run dos-detector serve" is running in your terminal.');
       } finally {
         zone.classList.remove('busy');
+        const fi = document.getElementById('fileInput');
+        if (fi) fi.value = '';
       }
     }
 
@@ -633,10 +658,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       // Update Chart
-      chart.data.labels = data.timeline.map(t => t.end_time + 's');
-      chart.data.datasets[0].data = data.timeline.map(t => t.packet_rate);
-      chart.data.datasets[1].data = data.timeline.map(t => t.syn_pps);
-      chart.update();
+      if (chart && chart.data) {
+        chart.data.labels = data.timeline.map(t => t.end_time + 's');
+        chart.data.datasets[0].data = data.timeline.map(t => t.packet_rate);
+        chart.data.datasets[1].data = data.timeline.map(t => t.syn_pps);
+        chart.update();
+      }
 
       // Update Table
       const tbody = document.getElementById('alertsBody');
@@ -662,10 +689,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('alertsBody').innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 24px;">Cleared. Ready for new traffic.</td></tr>';
       document.getElementById('kpiPackets').innerText = '0';
       document.getElementById('kpiAlerts').innerText = '0';
-      chart.data.labels = [];
-      chart.data.datasets[0].data = [];
-      chart.data.datasets[1].data = [];
-      chart.update();
+      if (chart && chart.data) {
+        chart.data.labels = [];
+        chart.data.datasets[0].data = [];
+        chart.data.datasets[1].data = [];
+        chart.update();
+      }
     }
 
     window.onload = async () => {
@@ -845,7 +874,10 @@ def create_app(
             ) from exc
         finally:
             if tmp_path.is_file():
-                tmp_path.unlink()
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("Could not immediately remove temp file %s: %s", tmp_path, exc)
 
     @app.get("/api/alerts")
     def get_alerts(
