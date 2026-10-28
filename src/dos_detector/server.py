@@ -287,8 +287,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .btn:hover { background: #30363d; border-color: #8b949e; }
     .btn-primary { background: #238636; border-color: rgba(240, 246, 252, 0.1); }
     .btn-primary:hover { background: #2ea043; }
-    .upload-zone { border: 2px dashed var(--border-color); border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; background: rgba(22, 27, 34, 0.5); transition: border-color 0.2s; }
-    .upload-zone:hover { border-color: var(--accent-blue); }
+    .upload-zone { border: 2px dashed var(--border-color); border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; background: rgba(22, 27, 34, 0.5); transition: all 0.2s ease; position: relative; }
+    .upload-zone:hover { border-color: var(--accent-blue); background: rgba(88, 166, 255, 0.04); }
+    .upload-zone.dragover { border-color: var(--accent-green) !important; background: rgba(63, 185, 80, 0.12) !important; transform: scale(1.01); }
+    .upload-zone.busy { pointer-events: none; opacity: 0.8; border-color: var(--accent-purple) !important; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: #fff; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     .chart-container { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px; margin-bottom: 24px; height: 320px; }
 
@@ -352,11 +356,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="btn btn-primary" onclick="runDemo()" id="btnDemo">▶ Run Simulation Demo</button>
     </div>
 
-    <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
-      <input type="file" id="fileInput" style="display: none;" accept=".pcap,.pcapng,.csv" onchange="uploadFile(this.files[0])">
-      <div style="font-size: 24px; margin-bottom: 8px;">📂</div>
-      <h3 style="font-size: 14px; margin-bottom: 4px;">Upload Offline PCAP or CSV File</h3>
-      <p style="font-size: 12px; color: var(--text-muted);">Drag & drop or click to analyze saved captures (CIC-IDS2017, PCAP, PCAPNG)</p>
+    <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+      <input type="file" id="fileInput" style="display: none;" accept=".pcap,.pcapng,.cap,.csv,.tsv" onchange="if(this.files[0]) uploadFile(this.files[0]); this.value='';">
+      <div id="uploadIcon" style="font-size: 26px; margin-bottom: 6px;">📂</div>
+      <h3 id="uploadTitle" style="font-size: 14px; margin-bottom: 4px; color: #fff;">Upload Offline PCAP or CSV File</h3>
+      <p id="uploadDesc" style="font-size: 12px; color: var(--text-muted);">Drag & drop or click to analyze saved captures (PCAP, PCAPNG, CSV)</p>
     </div>
   </div>
 
@@ -461,18 +465,100 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function uploadFile(file) {
       if (!file) return;
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await fetch('/api/analyze/upload', {
-        method: 'POST',
-        body: formData
-      });
-      if (res.ok) {
+
+      const validExts = ['.pcap', '.pcapng', '.cap', '.csv', '.tsv'];
+      const fileNameLower = file.name.toLowerCase();
+      const isValid = validExts.some(ext => fileNameLower.endsWith(ext));
+      if (!isValid) {
+        alert('Unsupported file format. Please upload a .pcap, .pcapng, or .csv capture file.');
+        return;
+      }
+
+      const zone = document.getElementById('dropZone');
+      const title = document.getElementById('uploadTitle');
+      const desc = document.getElementById('uploadDesc');
+      const icon = document.getElementById('uploadIcon');
+
+      zone.classList.add('busy');
+      icon.innerHTML = '<span class="spinner"></span>';
+      title.innerText = `Analyzing: ${file.name}...`;
+      desc.innerText = 'Extracting sliding windows and evaluating heuristics. Please wait...';
+
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('/api/analyze/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          let detail = errText;
+          try {
+            const parsed = JSON.parse(errText);
+            detail = parsed.detail || errText;
+          } catch (_) {}
+          alert('Analysis failed: ' + detail);
+          icon.innerText = '⚠️';
+          title.innerText = 'Upload / Analysis Failed';
+          desc.innerText = detail;
+          return;
+        }
+
         const data = await res.json();
         renderResults(data);
-      } else {
-        alert('Analysis failed: ' + (await res.text()));
+        icon.innerText = '✅';
+        title.innerText = `Completed: ${file.name}`;
+        desc.innerText = `Evaluated ${data.total_packets.toLocaleString()} packets across ${data.total_windows} windows (${data.total_alerts} alerts). Click or drop another.`;
+      } catch (err) {
+        alert('Network or server error during upload: ' + err.message);
+        icon.innerText = '❌';
+        title.innerText = 'Connection Error';
+        desc.innerText = 'Failed to communicate with detector server.';
+      } finally {
+        zone.classList.remove('busy');
       }
+    }
+
+    function initDragAndDrop() {
+      const zone = document.getElementById('dropZone');
+      if (!zone) return;
+
+      ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        window.addEventListener(eventName, e => e.preventDefault(), false);
+        zone.addEventListener(eventName, e => {
+          e.preventDefault();
+          e.stopPropagation();
+        }, false);
+      });
+
+      ['dragenter', 'dragover'].forEach(eventName => {
+        zone.addEventListener(eventName, () => {
+          zone.classList.add('dragover');
+          document.getElementById('uploadTitle').innerText = 'Drop PCAP / CSV file here...';
+          document.getElementById('uploadIcon').innerText = '📥';
+        }, false);
+      });
+
+      ['dragleave', 'dragend'].forEach(eventName => {
+        zone.addEventListener(eventName, () => {
+          zone.classList.remove('dragover');
+          document.getElementById('uploadTitle').innerText = 'Upload Offline PCAP or CSV File';
+          document.getElementById('uploadIcon').innerText = '📂';
+        }, false);
+      });
+
+      zone.addEventListener('drop', (e) => {
+        zone.classList.remove('dragover');
+        document.getElementById('uploadTitle').innerText = 'Upload Offline PCAP or CSV File';
+        document.getElementById('uploadIcon').innerText = '📂';
+
+        const dt = e.dataTransfer;
+        if (dt && dt.files && dt.files.length > 0) {
+          uploadFile(dt.files[0]);
+        }
+      }, false);
     }
 
     function renderResults(data) {
@@ -531,6 +617,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     window.onload = async () => {
       await initChart();
       await fetchHealth();
+      initDragAndDrop();
     };
   </script>
 </body>
@@ -632,6 +719,7 @@ def create_app(
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_path = Path(tmp_file.name)
             try:
+                file.file.seek(0)
                 shutil.copyfileobj(file.file, tmp_file)
             except Exception as exc:
                 if tmp_path.is_file():
@@ -651,6 +739,12 @@ def create_app(
 
             result = _run_analysis(stream, state, source_name=file.filename or "uploaded_capture")
             return result
+        except Exception as exc:
+            logger.exception("Error analyzing uploaded capture file: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to analyze capture '{file.filename}': {exc}",
+            ) from exc
         finally:
             if tmp_path.is_file():
                 tmp_path.unlink()

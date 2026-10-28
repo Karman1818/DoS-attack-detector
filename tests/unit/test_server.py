@@ -33,6 +33,8 @@ def test_get_dashboard_returns_html(test_client: TestClient) -> None:
     assert "text/html" in response.headers["content-type"]
     assert "DoS Attack Detector" in response.text
     assert '<canvas id="trafficChart"' in response.text
+    assert 'id="dropZone"' in response.text
+    assert "initDragAndDrop" in response.text
 
 
 @pytest.mark.unit
