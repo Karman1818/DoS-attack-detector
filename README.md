@@ -107,6 +107,21 @@ uv run dos-detector pcap data/raw/capture.pcap --detector ml --model models/base
 uv run dos-detector csv data/cic_ids2017/Friday-WorkingHours.csv --cic --detector hybrid
 ```
 
+### SIEM Integration & Alert Export (CEF, Syslog RFC 5424, JSON/NDJSON)
+Export defensive detection alerts into industry-standard SIEM formats for ArcSight, Splunk, ElasticSearch, Graylog, and Microsoft Sentinel:
+
+```bash
+# 1. Export to Micro Focus ArcSight Common Event Format (CEF) file
+uv run dos-detector pcap data/raw/capture.pcap --export-siem cef --export-output alerts.cef
+
+# 2. Export to newline-delimited JSON (NDJSON) for Splunk HEC or Elastic ingest
+uv run dos-detector csv data/traffic.csv --export-siem json --export-output alerts.ndjson
+
+# 3. Stream Syslog RFC 5424 directly to stdout for Unix piping (e.g., to local syslog daemon / logger)
+# Note: Diagnostic banners are routed to stderr, preserving clean machine-readable stdout for pipelines
+uv run dos-detector demo --export-siem syslog | logger -t dos-detector
+```
+
 ### Train a Custom Isolation Forest Anomaly Detection Baseline
 Fit an Isolation Forest model on known benign network traffic to establish an environment-specific baseline:
 ```bash
@@ -178,7 +193,8 @@ src/dos_detector/
 ├── ingestion.py       # stream_pcap and stream_csv generators
 ├── ml.py              # Isolation Forest baseline training & feature extraction
 ├── models.py          # Immutable PacketRecord, TrafficWindow, DetectionAlert
-└── server.py          # FastAPI backend and embedded SOC monitoring dashboard
+├── server.py          # FastAPI backend and embedded SOC monitoring dashboard
+└── siem.py            # SIEM export formats (CEF, Syslog RFC 5424, NDJSON)
 ```
 
 See [docs/architecture.md](docs/architecture.md) for full architectural documentation.

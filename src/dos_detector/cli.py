@@ -46,6 +46,7 @@ from dos_detector.ml import (
     train_isolation_forest,
 )
 from dos_detector.models import PacketRecord
+from dos_detector.siem import SiemAlertSink
 
 
 def _generate_synthetic_demo_pcap(target_path: Path) -> int:
@@ -175,60 +176,87 @@ def _process_packet_stream(
     config: DetectionConfig,
     source_desc: str,
     step_size: float = 0.2,
+    export_siem: str | None = None,
+    export_output: str | None = None,
 ) -> None:
     """Run sliding window feature extraction and detection engine on packet stream."""
-    sink = ConsoleAlertSink()
+    stream_siem_to_stdout = bool(export_siem and not export_output)
+    info_out = sys.stderr if stream_siem_to_stdout else sys.stdout
+
+    siem_sink: SiemAlertSink | None = None
+    if export_siem:
+        target = export_output if export_output else sys.stdout
+        siem_sink = SiemAlertSink(target=target, format_type=export_siem)
+
+    console_sink = None if stream_siem_to_stdout else ConsoleAlertSink()
     detector, mode_label, model_desc = _build_detector(config, model_path=config.ml_model_path)
     aggregator = SlidingWindowAggregator(
         window_size=config.window_size_seconds,
         step_size=step_size,
     )
 
-    print("\n" + "=" * 88)
-    print(f"[*] Analyzing Network Traffic Source: {source_desc}")
-    print(f"[*] Running analysis with [{mode_label}] detector engine")
+    print("\n" + "=" * 88, file=info_out)
+    print(f"[*] Analyzing Network Traffic Source: {source_desc}", file=info_out)
+    print(f"[*] Running analysis with [{mode_label}] detector engine", file=info_out)
     if mode_label in ("ml", "hybrid"):
-        print(f"[*] ML Anomaly Model: {model_desc}")
+        print(f"[*] ML Anomaly Model: {model_desc}", file=info_out)
     print(
         f"[*] Observation Horizon: Window={config.window_size_seconds}s (step={step_size}s) | "
         f"Min Consecutive={config.min_consecutive_windows} | "
-        f"Alert Cooldown={config.alert_cooldown_seconds}s"
+        f"Alert Cooldown={config.alert_cooldown_seconds}s",
+        file=info_out,
     )
     if mode_label in ("base", "hybrid"):
-        print("[*] Active Detection Engine Thresholds (Prioritized by Attack Specificity):")
         print(
-            "+---------------------------+---------------+------------------------------------------+"
+            "[*] Active Detection Engine Thresholds (Prioritized by Attack Specificity):",
+            file=info_out,
         )
         print(
-            "| Heuristic Rule            | Threshold     | Trigger Condition                        |"
+            "+---------------------------+---------------+------------------------------------------+",
+            file=info_out,
         )
         print(
-            "+---------------------------+---------------+------------------------------------------+"
+            "| Heuristic Rule            | Threshold     | Trigger Condition                        |",
+            file=info_out,
         )
         print(
-            f"| DNS Flood (L4/L7)         | >= {config.dns_flood_pps_threshold:.0f} pps    | Port 53 UDP/TCP | DRDoS Amplification    |"
+            "+---------------------------+---------------+------------------------------------------+",
+            file=info_out,
         )
         print(
-            f"| HTTP WebDDoS (L7)         | >= {config.http_flood_pps_threshold:.0f} req/s   | Ports 80/8080 | URI Repetition >= {config.http_uri_repetition_threshold * 100:.0f}%   |"
+            f"| DNS Flood (L4/L7)         | >= {config.dns_flood_pps_threshold:.0f} pps    | Port 53 UDP/TCP | DRDoS Amplification    |",
+            file=info_out,
         )
         print(
-            f"| TCP SYN Flood (L4)        | >= {config.syn_flood_pps_threshold:.0f} pps    | SYN/ACK >= {config.syn_ack_ratio_threshold:.1f} OR (>=500 pps & SYN>=70%) |"
+            f"| HTTP WebDDoS (L7)         | >= {config.http_flood_pps_threshold:.0f} req/s   | Ports 80/8080 | URI Repetition >= {config.http_uri_repetition_threshold * 100:.0f}%   |",
+            file=info_out,
         )
         print(
-            f"| UDP Flood (General)       | >= {config.udp_flood_pps_threshold:.0f} pps   | UDP Ratio >= {config.udp_ratio_threshold * 100:.0f}% (non-DNS fallback)      |"
+            f"| TCP SYN Flood (L4)        | >= {config.syn_flood_pps_threshold:.0f} pps    | SYN/ACK >= {config.syn_ack_ratio_threshold:.1f} OR (>=500 pps & SYN>=70%) |",
+            file=info_out,
         )
         print(
-            f"| Volumetric Throughput     | >= {config.volumetric_bps_threshold / 1_000_000:.1f} MB/s  | Bandwidth byte flood fallback            |"
+            f"| UDP Flood (General)       | >= {config.udp_flood_pps_threshold:.0f} pps   | UDP Ratio >= {config.udp_ratio_threshold * 100:.0f}% (non-DNS fallback)      |",
+            file=info_out,
         )
         print(
-            f"| Packet Rate Flood (Gen)   | >= {config.packet_flood_pps_threshold:.0f} pps   | Focused packet flood fallback            |"
+            f"| Volumetric Throughput     | >= {config.volumetric_bps_threshold / 1_000_000:.1f} MB/s  | Bandwidth byte flood fallback            |",
+            file=info_out,
         )
         print(
-            "+---------------------------+---------------+------------------------------------------+"
+            f"| Packet Rate Flood (Gen)   | >= {config.packet_flood_pps_threshold:.0f} pps   | Focused packet flood fallback            |",
+            file=info_out,
+        )
+        print(
+            "+---------------------------+---------------+------------------------------------------+",
+            file=info_out,
         )
     elif mode_label == "ml":
-        print("[*] Unsupervised Multidimensional Anomaly Profiling Active (10 features)")
-    print("=" * 88 + "\n")
+        print(
+            "[*] Unsupervised Multidimensional Anomaly Profiling Active (10 features)",
+            file=info_out,
+        )
+    print("=" * 88 + "\n", file=info_out)
 
     total_packets_inspected = 0
     total_alerts_emitted = 0
@@ -243,15 +271,26 @@ def _process_packet_stream(
         alerts = detector.evaluate_window(window)
         for alert in alerts:
             total_alerts_emitted += 1
-            sink.emit(alert)
+            if console_sink:
+                console_sink.emit(alert)
+            if siem_sink:
+                siem_sink.emit(alert)
 
-    print("\n" + "-" * 75)
-    print(f"[+] Analysis Complete: {total_packets_inspected} packets evaluated.")
+    if siem_sink:
+        siem_sink.close()
+
+    print("\n" + "-" * 75, file=info_out)
+    print(f"[+] Analysis Complete: {total_packets_inspected} packets evaluated.", file=info_out)
     if total_alerts_emitted > 0:
-        print(f"[!] Detections: {total_alerts_emitted} suspicious event(s) flagged.")
+        print(f"[!] Detections: {total_alerts_emitted} suspicious event(s) flagged.", file=info_out)
+        if export_siem and export_output:
+            print(
+                f"[+] SIEM Export ({export_siem.upper()}): Saved {total_alerts_emitted} alert(s) to: {export_output}",
+                file=info_out,
+            )
     else:
-        print("[+] Detections: No anomalies found. Traffic profile is balanced.")
-    print("-" * 75 + "\n")
+        print("[+] Detections: No anomalies found. Traffic profile is balanced.", file=info_out)
+    print("-" * 75 + "\n", file=info_out)
 
 
 def cmd_demo(args: argparse.Namespace) -> None:
@@ -267,6 +306,8 @@ def cmd_demo(args: argparse.Namespace) -> None:
         config,
         str(sample_file),
         step_size=args.step,
+        export_siem=getattr(args, "export_siem", None),
+        export_output=getattr(args, "export_output", None),
     )
 
 
@@ -283,6 +324,8 @@ def cmd_pcap(args: argparse.Namespace) -> None:
         config,
         str(pcap_path),
         step_size=args.step,
+        export_siem=getattr(args, "export_siem", None),
+        export_output=getattr(args, "export_output", None),
     )
 
 
@@ -300,6 +343,8 @@ def cmd_csv(args: argparse.Namespace) -> None:
         config,
         str(csv_path),
         step_size=args.step,
+        export_siem=getattr(args, "export_siem", None),
+        export_output=getattr(args, "export_output", None),
     )
 
 
@@ -506,6 +551,18 @@ def _add_common_detection_args(subparser: argparse.ArgumentParser) -> None:
         type=float,
         default=1.0,
         help="Alert cooldown in seconds to suppress duplicate alerts (default: 1.0)",
+    )
+    subparser.add_argument(
+        "--export-siem",
+        choices=["cef", "syslog", "json", "ndjson"],
+        default=None,
+        help="Export detection alerts formatted for SIEM ingest (cef, syslog, json, ndjson)",
+    )
+    subparser.add_argument(
+        "--export-output",
+        type=str,
+        default=None,
+        help="Destination file path for SIEM export (if omitted with --export-siem, stream raw events to stdout)",
     )
 
 
