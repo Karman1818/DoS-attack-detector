@@ -28,7 +28,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies from lockfile
-        run: uv sync --extra dev
+        run: uv sync --all-extras
 
       - name: Run Ruff Linting
         run: uv run ruff check .
