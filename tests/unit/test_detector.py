@@ -588,3 +588,31 @@ def test_hybrid_detector_reset() -> None:
     detector.reset()
     assert detector.rule_detector._consecutive_violations == {}
     assert detector.ml_detector._consecutive_violations == 0
+
+
+@pytest.mark.unit
+def test_isolation_forest_suppresses_high_throughput_benign_burst() -> None:
+    """Verify high-throughput symmetric traffic (e.g. 1500 pps download) does not false alarm."""
+    detector = IsolationForestDetector()
+
+    # 1500 PPS download burst (pure ACKs, high bandwidth, normal established TCP)
+    burst_win = TrafficWindow(
+        start_time=0.0,
+        end_time=1.0,
+        total_packets=1500,
+        total_bytes=2_100_000,
+        packet_rate=1500.0,
+        byte_rate=2_100_000.0,
+        syn_count=0,
+        ack_count=1500,
+        rst_count=0,
+        unique_src_ips=5,
+        unique_dst_ports=1,
+        tcp_count=1500,
+        top_source_ip="192.168.1.10",
+        top_source_ip_ratio=0.7,
+        top_dst_port=443,
+        top_dst_port_ratio=1.0,
+    )
+    alerts = detector.evaluate_window(burst_win)
+    assert alerts == []

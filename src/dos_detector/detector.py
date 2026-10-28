@@ -541,6 +541,23 @@ class IsolationForestDetector(BaseDetector):
         prediction = int(self.model.predict(X)[0])  # -1 for anomaly, 1 for inlier
         is_anomaly = prediction == -1 or anomaly_score < 0.0
 
+        # Defensive protocol symmetry filter:
+        # Suppress volumetric false alarms on legitimate transmission bursts (file downloads, media streams)
+        # that maintain healthy protocol balance without DoS/DDoS attack asymmetry.
+        syn_tcp_ratio = (window.syn_count / window.tcp_count) if window.tcp_count > 0 else 0.0
+        is_symmetric_tcp = (
+            window.tcp_count > 0
+            and window.syn_ack_ratio <= 1.5
+            and syn_tcp_ratio <= 0.15
+            and window.top_http_uri_ratio < 0.50
+        )
+        is_clean_protocol = window.dns_ratio < 0.40 and (
+            window.udp_ratio < 0.60 or window.udp_count < 100
+        )
+
+        if is_symmetric_tcp and is_clean_protocol:
+            is_anomaly = False
+
         if not self._should_emit(is_anomaly, window.end_time):
             return []
 
