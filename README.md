@@ -89,8 +89,9 @@ uv run dos-detector serve
 uv run dos-detector serve --port 8080 --detector hybrid
 ```
 Once started, access:
-- **Interactive SOC Dashboard**: `http://127.0.0.1:8000/` (Live PPS/BPS chart, KPI anomaly cards, 1-click educational attack simulation demo, drag-and-drop PCAP/CSV upload, and real-time alert feed with XAI feature explanations)
+- **Interactive SOC Dashboard**: `http://127.0.0.1:8000/` (Live PPS/BPS chart, KPI anomaly cards, 1-click educational attack simulation demo, drag-and-drop PCAP/CSV upload, real-time alert feed with XAI feature explanations, and 1-click SIEM export buttons)
 - **OpenAPI / Swagger Documentation**: `http://127.0.0.1:8000/docs`
+- **SIEM Export Endpoint**: `GET /api/alerts/export?format=cef|syslog|json|ndjson&severity=HIGH` (Direct attachment download for security pipelines)
 
 
 ### Analyze an Offline PCAP/PCAPNG Capture
@@ -120,6 +121,10 @@ uv run dos-detector csv data/traffic.csv --export-siem json --export-output aler
 # 3. Stream Syslog RFC 5424 directly to stdout for Unix piping (e.g., to local syslog daemon / logger)
 # Note: Diagnostic banners are routed to stderr, preserving clean machine-readable stdout for pipelines
 uv run dos-detector demo --export-siem syslog | logger -t dos-detector
+
+# 4. Export alerts via FastAPI REST API in ArcSight CEF or Syslog RFC 5424 format
+curl "http://127.0.0.1:8000/api/alerts/export?format=cef" -o alerts.cef
+curl "http://127.0.0.1:8000/api/alerts/export?format=syslog&severity=HIGH" -o alerts.log
 ```
 
 ### Train a Custom Isolation Forest Anomaly Detection Baseline

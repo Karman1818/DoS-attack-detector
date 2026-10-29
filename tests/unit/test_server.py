@@ -35,6 +35,10 @@ def test_get_dashboard_returns_html(test_client: TestClient) -> None:
     assert '<canvas id="trafficChart"' in response.text
     assert 'id="dropZone"' in response.text
     assert "initDragAndDrop" in response.text
+    assert "exportSiem" in response.text
+    assert "exportSiem('cef')" in response.text
+    assert "exportSiem('syslog')" in response.text
+    assert "exportSiem('ndjson')" in response.text
 
 
 @pytest.mark.unit
@@ -211,3 +215,105 @@ def test_upload_custom_model_and_reset(test_client: TestClient, tmp_path: Path) 
     res_reset = test_client.post("/api/model/reset")
     assert res_reset.status_code == 200
     assert "Built-in reference baseline" in res_reset.json()["model_description"]
+
+
+@pytest.mark.unit
+def test_export_alerts_cef(test_client: TestClient) -> None:
+    """Verify exporting alerts in CEF format via REST API."""
+    test_client.post("/api/analyze/demo")
+    response = test_client.get("/api/alerts/export?format=cef")
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "attachment; filename=" in response.headers["content-disposition"]
+    assert response.headers["content-disposition"].endswith('.cef"')
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert len(lines) > 0
+    assert all(line.startswith("CEF:0|DoS-Detector|DefensiveEngine|") for line in lines)
+    assert "cs1=" in response.text
+    assert "msg=" in response.text
+
+
+@pytest.mark.unit
+def test_export_alerts_syslog(test_client: TestClient) -> None:
+    """Verify exporting alerts in Syslog RFC 5424 format via REST API."""
+    test_client.post("/api/analyze/demo")
+    response = test_client.get("/api/alerts/export?format=syslog")
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "attachment; filename=" in response.headers["content-disposition"]
+    assert response.headers["content-disposition"].endswith('.log"')
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert len(lines) > 0
+    for line in lines:
+        assert line.startswith("<")
+        assert "dos-detector" in line
+        assert "[dosAlert@5424" in line
+
+
+@pytest.mark.unit
+def test_export_alerts_ndjson(test_client: TestClient) -> None:
+    """Verify exporting alerts in NDJSON format for streaming ingestion."""
+    import json
+
+    test_client.post("/api/analyze/demo")
+    response = test_client.get("/api/alerts/export?format=ndjson")
+    assert response.status_code == 200
+    assert "application/x-ndjson" in response.headers["content-type"]
+    assert "attachment; filename=" in response.headers["content-disposition"]
+    assert response.headers["content-disposition"].endswith('.ndjson"')
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert len(lines) > 0
+    for line in lines:
+        parsed = json.loads(line)
+        assert "rule_name" in parsed
+        assert "severity" in parsed
+        assert "confidence" in parsed
+
+
+@pytest.mark.unit
+def test_export_alerts_json(test_client: TestClient) -> None:
+    """Verify exporting alerts in standard JSON format."""
+    import json
+
+    test_client.post("/api/analyze/demo")
+    response = test_client.get("/api/alerts/export?format=json")
+    assert response.status_code == 200
+    assert "application/json" in response.headers["content-type"]
+    assert "attachment; filename=" in response.headers["content-disposition"]
+    assert response.headers["content-disposition"].endswith('.json"')
+    parsed = json.loads(response.text)
+    assert isinstance(parsed, list)
+    assert len(parsed) > 0
+
+
+@pytest.mark.unit
+def test_export_alerts_filtering_by_severity(test_client: TestClient) -> None:
+    """Verify filtering exported alerts by severity level."""
+    test_client.post("/api/analyze/demo")
+    res_high = test_client.get("/api/alerts/export?format=cef&severity=HIGH")
+    assert res_high.status_code == 200
+    for line in res_high.text.splitlines():
+        if line.strip():
+            assert "|8|" in line
+
+    res_none = test_client.get("/api/alerts/export?format=cef&severity=LOW")
+    assert res_none.status_code == 200
+    assert res_none.text.strip() == ""
+
+
+@pytest.mark.unit
+def test_export_alerts_invalid_format(test_client: TestClient) -> None:
+    """Verify 400 error when an unsupported SIEM format is requested."""
+    response = test_client.get("/api/alerts/export?format=xml_unknown")
+    assert response.status_code == 400
+    assert "Unsupported SIEM format 'xml_unknown'" in response.json()["detail"]
+
+
+@pytest.mark.unit
+def test_export_alerts_empty_after_clear(test_client: TestClient) -> None:
+    """Verify export is empty when alerts are cleared."""
+    test_client.post("/api/analyze/demo")
+    test_client.post("/api/alerts/clear")
+    response = test_client.get("/api/alerts/export?format=cef")
+    assert response.status_code == 200
+    assert response.text.strip() == ""

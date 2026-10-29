@@ -5,18 +5,20 @@ on-demand analysis of synthetic demo streams, safe offline PCAP/CSV file uploads
 and serves the embedded SOC monitoring dashboard.
 """
 
+import json
 import logging
 import shutil
 import tempfile
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from dos_detector import __version__
@@ -36,6 +38,7 @@ from dos_detector.ingestion import (
 )
 from dos_detector.ml import get_default_baseline_model, load_model
 from dos_detector.models import DetectionAlert, PacketRecord
+from dos_detector.siem import SiemFormat, format_alert, format_alert_json
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,7 @@ class ServerState:
     model_desc: str = "Built-in reference baseline (Isolation Forest)"
     custom_model_path: Path | None = None
     alerts_history: list[dict[str, Any]] = field(default_factory=list)
+    raw_alerts: list[DetectionAlert] = field(default_factory=list)
     total_packets_evaluated: int = 0
     total_windows_evaluated: int = 0
 
@@ -197,6 +201,7 @@ def _run_analysis(
 
         if has_alert:
             for alert in alerts:
+                state.raw_alerts.append(alert)
                 severity_counter[alert.severity.value] += 1
                 attack_type_counter[alert.attack_type] += 1
                 alert_dict = {
@@ -378,7 +383,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <h3 style="font-size: 16px; margin-bottom: 12px;">Defensive Alert Timeline & Feature Deviations</h3>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+      <h3 style="font-size: 16px;">Defensive Alert Timeline &amp; Feature Deviations</h3>
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <span style="font-size: 12px; color: var(--text-muted); font-weight: 500;">SIEM Export:</span>
+        <button class="btn" style="padding: 5px 10px; font-size: 12px;" onclick="exportSiem('cef')" title="Export alerts to Micro Focus ArcSight Common Event Format (.cef)">📥 CEF</button>
+        <button class="btn" style="padding: 5px 10px; font-size: 12px;" onclick="exportSiem('syslog')" title="Export alerts to Syslog RFC 5424 with Structured Data (.log)">📥 Syslog</button>
+        <button class="btn" style="padding: 5px 10px; font-size: 12px;" onclick="exportSiem('ndjson')" title="Export alerts to NDJSON for Splunk/Elastic (.ndjson)">📥 NDJSON</button>
+      </div>
+    </div>
     <table id="alertsTable">
       <thead>
         <tr>
@@ -684,6 +697,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       `).join('');
     }
 
+    function exportSiem(format) {
+      const alertCount = parseInt(document.getElementById('kpiAlerts').innerText || '0', 10);
+      if (isNaN(alertCount) || alertCount === 0) {
+        alert('No alerts to export yet. Please run the Simulation Demo or upload a capture file first.');
+        return;
+      }
+      window.location.href = `/api/alerts/export?format=${encodeURIComponent(format)}`;
+    }
+
     async function clearAlerts() {
       await fetch('/api/alerts/clear', { method: 'POST' });
       document.getElementById('alertsBody').innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 24px;">Cleared. Ready for new traffic.</td></tr>';
@@ -890,10 +912,67 @@ def create_app(
             alerts = [a for a in alerts if a["severity"].upper() == severity.upper()]
         return alerts[-limit:]
 
+    @app.get("/api/alerts/export")
+    def export_alerts(
+        format: str = Query(
+            "cef",
+            description="SIEM export format: 'cef', 'syslog', 'json', or 'ndjson'",
+        ),
+        severity: str | None = Query(
+            None,
+            description="Optional severity filter (e.g. HIGH, CRITICAL)",
+        ),
+    ) -> Response:
+        """Export detection alerts formatted for SIEM ingest (CEF, Syslog RFC 5424, NDJSON)."""
+        fmt_str = format.lower().strip()
+        try:
+            siem_fmt = SiemFormat(fmt_str)
+        except ValueError as exc:
+            allowed = [f.value for f in SiemFormat]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported SIEM format '{format}'. Allowed formats: {allowed}",
+            ) from exc
+
+        alerts = state.raw_alerts
+        if severity:
+            alerts = [a for a in alerts if a.severity.value.upper() == severity.upper()]
+
+        if siem_fmt == SiemFormat.JSON:
+            alerts_data = [json.loads(format_alert_json(a)) for a in alerts]
+            payload = json.dumps(alerts_data, indent=2) + ("\n" if alerts_data else "")
+        else:
+            lines = [format_alert(a, siem_fmt) for a in alerts]
+            payload = "\n".join(lines) + ("\n" if lines else "")
+
+        now_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        if siem_fmt == SiemFormat.CEF:
+            media_type = "text/plain"
+            ext = "cef"
+        elif siem_fmt == SiemFormat.SYSLOG:
+            media_type = "text/plain"
+            ext = "log"
+        else:
+            media_type = (
+                "application/x-ndjson" if siem_fmt == SiemFormat.NDJSON else "application/json"
+            )
+            ext = "ndjson" if siem_fmt == SiemFormat.NDJSON else "json"
+
+        filename = f"dos_alerts_{now_str}.{ext}"
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-cache",
+            },
+        )
+
     @app.post("/api/alerts/clear")
     def clear_alerts() -> dict[str, str]:
         """Clear in-memory alert history and reset telemetry."""
         state.alerts_history.clear()
+        state.raw_alerts.clear()
         state.total_packets_evaluated = 0
         state.total_windows_evaluated = 0
         state.detector.reset()
