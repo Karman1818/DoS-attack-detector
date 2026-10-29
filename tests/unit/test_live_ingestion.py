@@ -33,8 +33,10 @@ def test_classify_interface_type() -> None:
 
 
 @pytest.mark.unit
-def test_get_network_interfaces_filtering(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify interface discovery parses metadata and filters noisy drivers."""
+def test_parse_windows_interface_list() -> None:
+    """Verify interface discovery parses metadata and filters noisy drivers without importing winreg."""
+    from dos_detector.ingestion import _parse_windows_interface_list
+
     mock_raw_list = [
         {
             "name": "Ethernet",
@@ -59,12 +61,7 @@ def test_get_network_interfaces_filtering(monkeypatch: pytest.MonkeyPatch) -> No
         },
     ]
 
-    import scapy.arch.windows as scapy_win
-
-    monkeypatch.setattr(scapy_win, "get_windows_if_list", lambda: mock_raw_list)
-    monkeypatch.setattr("sys.platform", "win32")
-
-    ifaces = get_network_interfaces()
+    ifaces = _parse_windows_interface_list(mock_raw_list)
     assert len(ifaces) == 2
     assert ifaces[0].name == "Ethernet"
     assert ifaces[0].interface_type == "Ethernet"
@@ -73,6 +70,55 @@ def test_get_network_interfaces_filtering(monkeypatch: pytest.MonkeyPatch) -> No
     assert ifaces[1].name == "Wi-Fi"
     assert ifaces[1].interface_type == "Wi-Fi"
     assert ifaces[1].ip_addresses == ("192.168.0.83",)
+
+
+@pytest.mark.unit
+def test_parse_unix_interface_list() -> None:
+    """Verify interface discovery parses Unix/Linux conf.ifaces properly."""
+    from unittest.mock import MagicMock
+
+    from dos_detector.ingestion import _parse_unix_interface_list
+
+    mock_iface = MagicMock()
+    mock_iface.name = "eth0"
+    mock_iface.description = "Gigabit Ethernet"
+    mock_iface.mac = "00:11:22:33:44:55"
+    mock_iface.ip = "192.168.1.20"
+
+    ifaces = _parse_unix_interface_list({"eth0": mock_iface})
+    assert len(ifaces) == 1
+    assert ifaces[0].name == "eth0"
+    assert ifaces[0].interface_type == "Ethernet"
+    assert ifaces[0].ip_addresses == ("192.168.1.20",)
+
+
+@pytest.mark.unit
+def test_get_network_interfaces_cross_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify cross-platform dispatch of get_network_interfaces without loading OS-specific modules."""
+    # Test Windows branch using mocked raw list (safe on Linux runners)
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr(
+        "dos_detector.ingestion._get_raw_windows_ifaces",
+        lambda: [{"name": "Wi-Fi", "description": "Wireless Adapter", "ips": ["10.0.0.1"]}],
+    )
+    win_ifaces = get_network_interfaces()
+    assert len(win_ifaces) == 1
+    assert win_ifaces[0].name == "Wi-Fi"
+
+    # Test Linux branch
+    from unittest.mock import MagicMock
+
+    mock_linux_iface = MagicMock()
+    mock_linux_iface.name = "wlan0"
+    mock_linux_iface.description = "Wireless Device"
+    mock_linux_iface.mac = "aa:bb:cc:dd:ee:ff"
+    mock_linux_iface.ip = "10.0.0.2"
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("scapy.all.conf.ifaces", {"wlan0": mock_linux_iface})
+    linux_ifaces = get_network_interfaces()
+    assert len(linux_ifaces) == 1
+    assert linux_ifaces[0].name == "wlan0"
 
 
 @pytest.mark.unit

@@ -347,70 +347,85 @@ def _classify_interface_type(name: str, description: str) -> str:
     return "Other"
 
 
+def _parse_windows_interface_list(raw_list: list[dict[str, Any]]) -> list[NetworkInterfaceInfo]:
+    """Parse raw Windows interface records into NetworkInterfaceInfo objects."""
+    interfaces: list[NetworkInterfaceInfo] = []
+    for iface in raw_list:
+        name = str(iface.get("name") or "")
+        desc = str(iface.get("description") or "")
+        guid = str(iface.get("guid") or "")
+        mac = str(iface.get("mac") or "")
+        ips = tuple(str(ip) for ip in iface.get("ips", []) if not str(ip).startswith("fe80::"))
+
+        # Filter out noisy miniports and virtual filter drivers
+        if any(ignored in desc for ignored in ("Filter", "Scheduler", "WAN Miniport")):
+            continue
+
+        iface_type = _classify_interface_type(name, desc)
+        interfaces.append(
+            NetworkInterfaceInfo(
+                name=name,
+                description=desc,
+                interface_type=iface_type,
+                ip_addresses=ips,
+                mac_address=mac,
+                guid_or_id=guid,
+            )
+        )
+    return interfaces
+
+
+def _parse_unix_interface_list(conf_ifaces: Any) -> list[NetworkInterfaceInfo]:
+    """Parse raw Unix/Linux conf.ifaces into NetworkInterfaceInfo objects."""
+    interfaces: list[NetworkInterfaceInfo] = []
+    for iface_key, iface in conf_ifaces.items():
+        name = getattr(iface, "name", str(iface_key))
+        desc = getattr(iface, "description", name) or name
+        mac = getattr(iface, "mac", "") or ""
+        ip = getattr(iface, "ip", None)
+        ips = (str(ip),) if ip else ()
+        iface_type = _classify_interface_type(name, desc)
+        interfaces.append(
+            NetworkInterfaceInfo(
+                name=name,
+                description=desc,
+                interface_type=iface_type,
+                ip_addresses=ips,
+                mac_address=mac,
+                guid_or_id=str(iface_key),
+            )
+        )
+    return interfaces
+
+
+def _get_raw_windows_ifaces() -> list[dict[str, Any]]:
+    """Query raw Windows adapter list using Scapy (Windows only)."""
+    from scapy.arch.windows import get_windows_if_list
+
+    raw: list[dict[str, Any]] = get_windows_if_list()
+    return raw
+
+
 def get_network_interfaces() -> list[NetworkInterfaceInfo]:
     """Discover available network adapters on the host operating system.
 
     Returns:
         List of discovered NetworkInterfaceInfo records with hardware categorization.
     """
-    interfaces: list[NetworkInterfaceInfo] = []
-
     if sys.platform == "win32":
         try:
-            from scapy.arch.windows import get_windows_if_list
-
-            raw_list = get_windows_if_list()
-            for iface in raw_list:
-                name = str(iface.get("name") or "")
-                desc = str(iface.get("description") or "")
-                guid = str(iface.get("guid") or "")
-                mac = str(iface.get("mac") or "")
-                ips = tuple(
-                    str(ip) for ip in iface.get("ips", []) if not str(ip).startswith("fe80::")
-                )
-
-                # Filter out noisy miniports and virtual filter drivers
-                if any(ignored in desc for ignored in ("Filter", "Scheduler", "WAN Miniport")):
-                    continue
-
-                iface_type = _classify_interface_type(name, desc)
-                interfaces.append(
-                    NetworkInterfaceInfo(
-                        name=name,
-                        description=desc,
-                        interface_type=iface_type,
-                        ip_addresses=ips,
-                        mac_address=mac,
-                        guid_or_id=guid,
-                    )
-                )
+            return _parse_windows_interface_list(_get_raw_windows_ifaces())
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to retrieve Windows interface list: %s", exc)
+            return []
     else:
         try:
             from scapy.all import conf
 
-            for iface_key, iface in conf.ifaces.items():
-                name = getattr(iface, "name", str(iface_key))
-                desc = getattr(iface, "description", name) or name
-                mac = getattr(iface, "mac", "") or ""
-                ip = getattr(iface, "ip", None)
-                ips = (str(ip),) if ip else ()
-                iface_type = _classify_interface_type(name, desc)
-                interfaces.append(
-                    NetworkInterfaceInfo(
-                        name=name,
-                        description=desc,
-                        interface_type=iface_type,
-                        ip_addresses=ips,
-                        mac_address=mac,
-                        guid_or_id=str(iface_key),
-                    )
-                )
+            return _parse_unix_interface_list(conf.ifaces)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to retrieve Unix interface list: %s", exc)
-
-    return interfaces
+            return []
 
 
 def resolve_interface_name(user_input: str) -> str:

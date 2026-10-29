@@ -36,6 +36,8 @@ models/*
 *.tsv
 *.parquet
 *.jsonl
+*.cef
+*.ndjson
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
