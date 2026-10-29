@@ -36,7 +36,9 @@ from dos_detector.evaluation import (
 from dos_detector.features import SlidingWindowAggregator
 from dos_detector.ingestion import (
     CIC_IDS2017_CSV_MAPPING,
+    get_network_interfaces,
     stream_csv,
+    stream_live,
     stream_pcap,
 )
 from dos_detector.ml import (
@@ -267,17 +269,20 @@ def _process_packet_stream(
             total_packets_inspected += 1
             yield pkt
 
-    for window in aggregator.aggregate(_counted_packets()):
-        alerts = detector.evaluate_window(window)
-        for alert in alerts:
-            total_alerts_emitted += 1
-            if console_sink:
-                console_sink.emit(alert)
-            if siem_sink:
-                siem_sink.emit(alert)
-
-    if siem_sink:
-        siem_sink.close()
+    try:
+        for window in aggregator.aggregate(_counted_packets()):
+            alerts = detector.evaluate_window(window)
+            for alert in alerts:
+                total_alerts_emitted += 1
+                if console_sink:
+                    console_sink.emit(alert)
+                if siem_sink:
+                    siem_sink.emit(alert)
+    except KeyboardInterrupt:
+        print("\n[!] Live capture session stopped by operator (Ctrl+C).", file=info_out)
+    finally:
+        if siem_sink:
+            siem_sink.close()
 
     print("\n" + "-" * 75, file=info_out)
     print(f"[+] Analysis Complete: {total_packets_inspected} packets evaluated.", file=info_out)
@@ -346,6 +351,77 @@ def cmd_csv(args: argparse.Namespace) -> None:
         export_siem=getattr(args, "export_siem", None),
         export_output=getattr(args, "export_output", None),
     )
+
+
+def cmd_live(args: argparse.Namespace) -> None:
+    """Capture and monitor network traffic live in an authorized, isolated lab."""
+    if args.list_interfaces:
+        interfaces = get_network_interfaces()
+        print("\n" + "=" * 80)
+        print("  AVAILABLE NETWORK INTERFACES")
+        print("=" * 80)
+        if not interfaces:
+            print("  No network interfaces detected or permissions insufficient.")
+        else:
+            for iface in interfaces:
+                ips_str = ", ".join(iface.ip_addresses) if iface.ip_addresses else "No IP"
+                mac_str = iface.mac_address or "Unknown MAC"
+                print(f"[{iface.interface_type}] {iface.name}")
+                print(f"  Description: {iface.description}")
+                print(f"  IP Address:  {ips_str}")
+                print(f"  MAC Address: {mac_str}")
+                print(f"  ID / GUID:   {iface.guid_or_id}")
+                print("-" * 80)
+        print("\nTo start monitoring, run with explicit lab authorization:")
+        print("  uv run dos-detector live --interface <NAME|IP|GUID> --authorized-lab\n")
+        return
+
+    if not args.authorized_lab:
+        print(
+            "\n[!] DEFENSIVE SAFETY & LEGAL GUARD: Explicit authorization required.\n"
+            "    Live network packet capture is strictly restricted to isolated, authorized laboratory\n"
+            "    environments. To proceed, confirm you have explicit authorization by providing:\n"
+            "        --authorized-lab\n"
+            "\n    Example:\n"
+            "        uv run dos-detector live --interface Wi-Fi --authorized-lab\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    target_name = args.interface or "Default Adapter"
+    print("\n" + "=" * 80)
+    print("  [!] DEFENSIVE NETWORK INTRUSION DETECTOR - AUTHORIZED LAB MODE")
+    print("=" * 80)
+    print(f"[*] Target Interface: {target_name}")
+    print(f"[*] BPF Filter:       {args.bpf or 'None (All IP Traffic)'}")
+    print(f"[*] Packet Limit:     {args.count or 'Continuous (Press Ctrl+C to terminate)'}")
+    print("=" * 80 + "\n")
+
+    config = _build_detection_config(args)
+    try:
+        packet_stream = stream_live(
+            interface=args.interface,
+            bpf_filter=args.bpf,
+            max_packets=args.count,
+        )
+        _process_packet_stream(
+            packet_stream,
+            config,
+            source_desc=f"Live Interface ({target_name})",
+            step_size=args.step,
+            export_siem=getattr(args, "export_siem", None),
+            export_output=getattr(args, "export_output", None),
+        )
+    except RuntimeError as exc:
+        print(f"\n[ERROR] Failed to start live capture: {exc}", file=sys.stderr)
+        print(
+            "Troubleshooting:\n"
+            "  1. On Windows: Run terminal as Administrator and ensure Npcap service is running.\n"
+            "  2. On Linux: Run with sudo or grant CAP_NET_RAW capability.\n"
+            "  3. Check available adapter names with: uv run dos-detector live --list-interfaces\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
@@ -600,6 +676,39 @@ def main() -> None:
     )
     _add_common_detection_args(parser_csv)
     parser_csv.set_defaults(func=cmd_csv)
+
+    # Subcommand: live
+    parser_live = subparsers.add_parser(
+        "live",
+        help="Monitor network traffic in real-time within an authorized, isolated lab environment.",
+    )
+    parser_live.add_argument(
+        "--interface",
+        "-i",
+        help="Target network adapter name, IP address, or GUID (default: system default).",
+    )
+    parser_live.add_argument(
+        "--list-interfaces",
+        action="store_true",
+        help="List available network interfaces categorized by type (Wi-Fi, Ethernet, etc.) and exit.",
+    )
+    parser_live.add_argument(
+        "--authorized-lab",
+        action="store_true",
+        help="Mandatory safety confirmation verifying this capture runs in an authorized, isolated lab.",
+    )
+    parser_live.add_argument(
+        "--bpf",
+        help="Berkeley Packet Filter (BPF) expression (e.g., 'tcp port 80', 'ip proto 6').",
+    )
+    parser_live.add_argument(
+        "--count",
+        type=int,
+        default=None,
+        help="Maximum number of packets to capture before stopping (default: continuous).",
+    )
+    _add_common_detection_args(parser_live)
+    parser_live.set_defaults(func=cmd_live)
 
     # Subcommand: evaluate
     parser_eval = subparsers.add_parser(

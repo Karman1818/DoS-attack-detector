@@ -108,6 +108,23 @@ uv run dos-detector pcap data/raw/capture.pcap --detector ml --model models/base
 uv run dos-detector csv data/cic_ids2017/Friday-WorkingHours.csv --cic --detector hybrid
 ```
 
+### Live Network Traffic Monitoring (Authorized Isolated Lab Mode)
+Monitor live network traffic on physical or virtual interfaces using a multi-threaded Producer-Consumer pipeline.
+*Strict Defensive Guard*: Requires the `--authorized-lab` confirmation flag to prevent unauthorized packet sniffing.
+
+```bash
+# 1. Discover and classify available network interfaces (Wi-Fi, Ethernet, Loopback, VPN)
+uv run dos-detector live --list-interfaces
+
+# 2. Continuous live monitoring on an interface with Berkeley Packet Filter (BPF) syntax
+uv run dos-detector live --interface Wi-Fi --bpf "tcp port 80" --authorized-lab
+
+# 3. Live capture with packet limit (e.g. 500 packets) and real-time SIEM CEF export
+uv run dos-detector live -i eth0 --count 500 --authorized-lab --export-siem cef --export-output live_alerts.cef
+
+# 4. Press CTRL+C at any time to safely terminate the capture and view session summary
+```
+
 ### SIEM Integration & Alert Export (CEF, Syslog RFC 5424, JSON/NDJSON)
 Export defensive detection alerts into industry-standard SIEM formats for ArcSight, Splunk, ElasticSearch, Graylog, and Microsoft Sentinel:
 
