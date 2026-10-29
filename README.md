@@ -6,7 +6,9 @@
 [![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Types: Mypy](https://img.shields.io/badge/types-mypy-blue.svg)](https://github.com/python/mypy)
 
-A defensive, offline network traffic analysis engine built in Python for detecting Denial-of-Service (DoS) and Distributed Denial-of-Service (DDoS) attack patterns using configurable heuristic rules and anomaly detection.
+A defensive, offline network traffic analysis engine built in Python for detecting Denial-of-Service (DoS) and Distributed Denial-of-Service (DDoS) attack patterns using configurable heuristic rules, machine-learning anomaly detection, and interactive SOC monitoring.
+
+![DoS Attack Detector SOC Monitoring Dashboard](docs/assets/dashboard.png)
 
 > [!NOTE]
 > **Educational & Defensive Scope**: This project is developed exclusively for defensive cybersecurity education and portfolio demonstration. It performs offline analysis on saved network capture files and synthetic test cases. It contains **no offensive capabilities** and does not generate network flood attacks.
