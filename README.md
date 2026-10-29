@@ -1,6 +1,6 @@
 # DoS Attack Detector
 
-[![CI Quality Checks](https://github.com/MarceliKarman/DoS-attack-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/MarceliKarman/DoS-attack-detector/actions/workflows/ci.yml)
+[![CI Quality Checks](https://github.com/Karman1818/DoS-attack-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/Karman1818/DoS-attack-detector/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
@@ -20,13 +20,30 @@ Denial-of-Service (DoS) attacks attempt to exhaust network bandwidth, server mem
 The **DoS Attack Detector** provides an explainable, multi-stage detection pipeline designed to inspect network traffic, compute statistical aggregations across discrete time windows, and flag anomalous signatures.
 
 ### Core Capabilities
-- **Memory-Efficient Streaming**: Generator-based streaming from PCAP/PCAPNG files (via Scapy) and tabular CSV logs (supporting standard formats and CIC-IDS2017) with constant memory footprint ($O(1)$ RAM).
-- **Rule-Based Heuristic Engine**:
-  - **SYN Flood Detection**: Identifies disproportionate SYN packet surges lacking corresponding ACKs.
-  - **Volumetric Flood Detection**: Flags bandwidth saturation exceeding configured byte thresholds.
-  - **Packet-Rate Flood Detection**: Flags high-frequency packet generation threatening CPU interrupt capacity.
-- **Explainable Detections**: Emits structured alerts with confidence scores and snapshot metrics rather than opaque binary alarms.
-- **Interactive CLI & Demo**: Built-in demonstration runner that generates safe synthetic traffic (normal web browsing + simulated SYN flood) and displays live detection results.
+- **Memory-Efficient Streaming ($O(1)$ RAM)**: Generator-based streaming from PCAP/PCAPNG files (via Scapy), tabular CSV logs (supporting standard formats and CIC-IDS2017), and live network interfaces without exhausting memory.
+- **Multi-Vector Rule-Based Heuristic Engine**:
+  - **TCP SYN Flood (L4)**: Identifies unacknowledged SYN packet surges and asymmetric SYN/ACK ratios.
+  - **DNS Amplification (L4/L7)**: Flags high-volume UDP/TCP DNS responses indicative of reflection attacks.
+  - **HTTP WebDDoS (L7)**: Detects application-layer HTTP GET/POST floods through request frequency and URI repetition clustering.
+  - **Volumetric & Packet-Rate Floods**: Identifies bandwidth saturation (MB/s) and packet rate (PPS) surges threatening link and CPU capacity.
+  - **Benign Burst Filter**: Heuristic connection symmetry analysis that eliminates false alarms during fast, legitimate file downloads (e.g. CIC-DDoS-2019-Benign).
+- **Machine Learning Anomaly Detection (Isolation Forest)**:
+  - Unsupervised multidimensional anomaly detection trained on legitimate baseline traffic (10-dimensional feature vectors).
+  - **Explainable AI (XAI)**: Generates human-readable metric deviation explanations (e.g., $Z$-score deviations) for every alert.
+  - **Hybrid Ensemble Mode**: Combines high-precision heuristic rules with unsupervised ML for low-rate and novel anomaly detection.
+- **Interactive Web SOC Dashboard & REST API**:
+  - Built-in FastAPI backend and responsive dark-theme SOC dashboard.
+  - Real-time Chart.js PPS/BPS line charts, KPI summary cards, drag-and-drop PCAP/CSV upload, and live alert feeds.
+  - **Runtime Model Hot-Swapping**: Upload custom `.joblib` Isolation Forest models and toggle active engines in real time.
+- **Enterprise SIEM Integration**:
+  - Standardized export forwarders for **Micro Focus ArcSight CEF**, **Syslog RFC 5424** (with Structured Data), and **NDJSON / JSON** (for Splunk, ElasticSearch, OpenSearch, and Microsoft Sentinel).
+  - Available via CLI streaming (`--export-siem`), file output, and direct 1-click downloads from the web dashboard.
+- **Live Traffic Monitoring (Authorized Lab Mode)**:
+  - Multi-threaded Producer-Consumer packet capture pipeline with bounded FIFO queue to prevent memory spikes.
+  - Cross-platform network adapter discovery (`--list-interfaces`) with hardware categorization (Wi-Fi, Ethernet, Loopback, VPN).
+  - Kernel-level Berkeley Packet Filter (**BPF**) syntax (e.g., `tcp port 80`) and mandatory safety guardrails (`--authorized-lab`).
+- **Benchmark Evaluation Harness**:
+  - Quantitative evaluation computing Confusion Matrix (TP, FP, TN, FN), Precision, Recall, Specificity, FPR, Accuracy, and F1-Score against labeled datasets (CIC-IDS2017) and synthetic benchmarks.
 
 ---
 
@@ -56,7 +73,7 @@ The **DoS Attack Detector** provides an explainable, multi-stage detection pipel
 ### Clone and Synchronize Virtual Environment
 ```bash
 # Clone repository
-git clone https://github.com/MarceliKarman/DoS-attack-detector.git
+git clone https://github.com/Karman1818/DoS-attack-detector.git
 cd DoS-attack-detector
 
 # Create virtual environment and synchronize dependencies from uv.lock
@@ -178,7 +195,7 @@ uv run dos-detector evaluate --pcap data/cic_ids2017/Friday.pcap --schedule data
 All commands are run within the managed virtual environment using `uv run`:
 
 ```bash
-# Run the test suite (64 unit and integration tests)
+# Run the test suite (97 unit and integration tests)
 uv run pytest -v
 
 # Run only unit tests
@@ -206,17 +223,17 @@ The codebase follows the modern Python `src` layout:
 ```text
 src/dos_detector/
 ├── __init__.py        # Package exports and version
-├── alerting.py        # AlertSink protocols and console sinks
-├── cli.py             # Interactive CLI entrypoint
-├── config.py          # DetectionConfig thresholds
-├── detector.py        # BaseDetector, RuleBasedDetector, IsolationForest, Hybrid
+├── alerting.py        # AlertSink protocols and console alert sinks
+├── cli.py             # Full-featured interactive CLI entrypoint
+├── config.py          # DetectionConfig with prioritized thresholds
+├── detector.py        # BaseDetector, RuleBasedDetector, IsolationForest, Hybrid, Benign Burst Filter
 ├── evaluation.py      # Benchmark evaluation harness, confusion matrix, CIC-IDS2017
-├── features.py        # compute_window_features and SlidingWindowAggregator
-├── ingestion.py       # stream_pcap and stream_csv generators
-├── ml.py              # Isolation Forest baseline training & feature extraction
-├── models.py          # Immutable PacketRecord, TrafficWindow, DetectionAlert
-├── server.py          # FastAPI backend and embedded SOC monitoring dashboard
-└── siem.py            # SIEM export formats (CEF, Syslog RFC 5424, NDJSON)
+├── features.py        # compute_window_features, Shannon IP entropy, SlidingWindowAggregator
+├── ingestion.py       # stream_pcap, stream_csv, stream_live, and adapter discovery
+├── ml.py              # Isolation Forest baseline training, feature extraction, and joblib persistence
+├── models.py          # Immutable PacketRecord, TrafficWindow, DetectionAlert, NetworkInterfaceInfo
+├── server.py          # FastAPI backend, REST API, and embedded SOC monitoring dashboard
+└── siem.py            # Enterprise SIEM export formats (CEF, Syslog RFC 5424, NDJSON, JSON)
 ```
 
 See [docs/architecture.md](docs/architecture.md) for full architectural documentation.
