@@ -7,8 +7,10 @@ without loading entire multi-gigabyte captures into memory.
 import csv
 import io
 import logging
+import queue
 import re
 import sys
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,7 +27,7 @@ try:
 finally:
     sys.stderr = _old_stderr
 
-from dos_detector.models import PacketRecord
+from dos_detector.models import NetworkInterfaceInfo, PacketRecord
 
 logger = logging.getLogger(__name__)
 
@@ -322,3 +324,235 @@ def stream_csv(
                     path.name,
                     exc,
                 )
+
+
+# ---------------------------------------------------------------------------
+# Live Traffic Ingestion & Network Interface Discovery
+# ---------------------------------------------------------------------------
+
+
+def _classify_interface_type(name: str, description: str) -> str:
+    """Classify network interface into a human-readable hardware or logical category."""
+    combined = f"{name} {description}".lower()
+    if any(k in combined for k in ("wi-fi", "wireless", "wlan", "802.11")):
+        return "Wi-Fi"
+    if "loopback" in combined:
+        return "Loopback"
+    if any(k in combined for k in ("virtual", "vpn", "tap", "tun", "veth", "hyper-v", "bridge")):
+        return "Virtual / VPN"
+    if any(k in combined for k in ("ethernet", "gbe", "pcie", "realtek", "intel", "lan", "eth")):
+        return "Ethernet"
+    if "bluetooth" in combined:
+        return "Bluetooth"
+    return "Other"
+
+
+def get_network_interfaces() -> list[NetworkInterfaceInfo]:
+    """Discover available network adapters on the host operating system.
+
+    Returns:
+        List of discovered NetworkInterfaceInfo records with hardware categorization.
+    """
+    interfaces: list[NetworkInterfaceInfo] = []
+
+    if sys.platform == "win32":
+        try:
+            from scapy.arch.windows import get_windows_if_list
+
+            raw_list = get_windows_if_list()
+            for iface in raw_list:
+                name = str(iface.get("name") or "")
+                desc = str(iface.get("description") or "")
+                guid = str(iface.get("guid") or "")
+                mac = str(iface.get("mac") or "")
+                ips = tuple(
+                    str(ip) for ip in iface.get("ips", []) if not str(ip).startswith("fe80::")
+                )
+
+                # Filter out noisy miniports and virtual filter drivers
+                if any(ignored in desc for ignored in ("Filter", "Scheduler", "WAN Miniport")):
+                    continue
+
+                iface_type = _classify_interface_type(name, desc)
+                interfaces.append(
+                    NetworkInterfaceInfo(
+                        name=name,
+                        description=desc,
+                        interface_type=iface_type,
+                        ip_addresses=ips,
+                        mac_address=mac,
+                        guid_or_id=guid,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to retrieve Windows interface list: %s", exc)
+    else:
+        try:
+            from scapy.all import conf
+
+            for iface_key, iface in conf.ifaces.items():
+                name = getattr(iface, "name", str(iface_key))
+                desc = getattr(iface, "description", name) or name
+                mac = getattr(iface, "mac", "") or ""
+                ip = getattr(iface, "ip", None)
+                ips = (str(ip),) if ip else ()
+                iface_type = _classify_interface_type(name, desc)
+                interfaces.append(
+                    NetworkInterfaceInfo(
+                        name=name,
+                        description=desc,
+                        interface_type=iface_type,
+                        ip_addresses=ips,
+                        mac_address=mac,
+                        guid_or_id=str(iface_key),
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to retrieve Unix interface list: %s", exc)
+
+    return interfaces
+
+
+def resolve_interface_name(user_input: str) -> str:
+    """Resolve user-supplied interface name, IP, or GUID to an active interface.
+
+    Args:
+        user_input: User-supplied interface string (e.g., 'Wi-Fi', '192.168.0.83', '{...}').
+
+    Returns:
+        Interface identifier accepted by Scapy's sniff().
+
+    Raises:
+        ValueError: If user input is empty or no matching interface is found.
+    """
+    cleaned = user_input.strip()
+    if not cleaned:
+        raise ValueError("Interface name cannot be empty.")
+
+    interfaces = get_network_interfaces()
+    if not interfaces:
+        return cleaned
+
+    # 1. Exact match by name (case-insensitive)
+    for iface in interfaces:
+        if iface.name.lower() == cleaned.lower():
+            return iface.name
+
+    # 2. Match by IP address
+    for iface in interfaces:
+        if cleaned in iface.ip_addresses:
+            return iface.name
+
+    # 3. Match by GUID / ID
+    for iface in interfaces:
+        if cleaned.lower() == iface.guid_or_id.lower():
+            return iface.guid_or_id
+
+    # 4. Partial substring match in name or description
+    for iface in interfaces:
+        if cleaned.lower() in iface.name.lower() or cleaned.lower() in iface.description.lower():
+            return iface.name
+
+    return cleaned
+
+
+def stream_live(
+    interface: str | None = None,
+    bpf_filter: str | None = None,
+    max_packets: int | None = None,
+    queue_size: int = 10_000,
+    stop_event: threading.Event | None = None,
+) -> Iterator[PacketRecord]:
+    """Capture and stream live network packets from an authorized interface using Producer-Consumer.
+
+    A background worker thread continuously captures raw packets via Scapy's sniff(),
+    normalizes them into immutable PacketRecord objects, and places them into a bounded
+    FIFO queue. The calling thread consumes packets as a generator.
+
+    Args:
+        interface: Network interface name, IP, or GUID (None for default interface).
+        bpf_filter: Optional Berkeley Packet Filter (BPF) syntax (e.g., 'tcp port 80').
+        max_packets: Optional maximum number of packets to capture before stopping.
+        queue_size: Maximum capacity of the internal buffer to prevent memory exhaustion.
+        stop_event: Optional threading.Event to signal external termination.
+
+    Yields:
+        PacketRecord for each valid IP packet captured on the interface.
+
+    Raises:
+        RuntimeError: If live capture fails to initialize (e.g. missing Npcap/libpcap or privileges).
+    """
+    packet_queue: queue.Queue[PacketRecord | Exception | None] = queue.Queue(maxsize=queue_size)
+    local_stop_event = stop_event or threading.Event()
+    resolved_iface = resolve_interface_name(interface) if interface else None
+
+    def _sniffer_worker() -> None:
+        try:
+
+            def _packet_callback(pkt: Packet) -> None:
+                if local_stop_event.is_set():
+                    return
+                record = _packet_to_record(pkt)
+                if record is not None:
+                    try:
+                        packet_queue.put(record, timeout=0.5)
+                    except queue.Full:
+                        logger.warning(
+                            "Live packet queue full (%d items); dropping packet to preserve stability.",
+                            queue_size,
+                        )
+
+            from scapy.sendrecv import sniff
+
+            sniff_kwargs: dict[str, Any] = {
+                "prn": _packet_callback,
+                "store": False,
+                "stop_filter": lambda _: local_stop_event.is_set(),
+            }
+            if resolved_iface:
+                sniff_kwargs["iface"] = resolved_iface
+            if bpf_filter:
+                sniff_kwargs["filter"] = bpf_filter
+            if max_packets:
+                sniff_kwargs["count"] = max_packets
+
+            sniff(**sniff_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            packet_queue.put(exc)
+        finally:
+            packet_queue.put(None)
+
+    worker = threading.Thread(
+        target=_sniffer_worker,
+        daemon=True,
+        name="dos-detector-live-sniffer",
+    )
+    worker.start()
+    packets_yielded = 0
+
+    try:
+        while True:
+            if local_stop_event.is_set():
+                break
+            try:
+                item = packet_queue.get(timeout=0.2)
+            except queue.Empty:
+                if not worker.is_alive():
+                    break
+                continue
+
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise RuntimeError(
+                    f"Live packet capture failed: {item}. Ensure you have administrative privileges "
+                    "and that Npcap/libpcap is installed and running."
+                ) from item
+
+            yield item
+            packets_yielded += 1
+            if max_packets is not None and packets_yielded >= max_packets:
+                break
+    finally:
+        local_stop_event.set()
+        worker.join(timeout=2.0)

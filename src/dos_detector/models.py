@@ -172,3 +172,15 @@ class DetectionAlert:
         if ddos_pct >= 50.0:
             return f"DDoS ({ddos_pct:.0f}%) vs DoS ({dos_pct:.0f}%)"
         return f"DoS ({dos_pct:.0f}%) vs DDoS ({ddos_pct:.0f}%)"
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkInterfaceInfo:
+    """Detailed metadata for a discovered network adapter."""
+
+    name: str
+    description: str
+    interface_type: str  # "Wi-Fi", "Ethernet", "Loopback", "Virtual / VPN", "Other"
+    ip_addresses: tuple[str, ...] = ()
+    mac_address: str = ""
+    guid_or_id: str = ""
